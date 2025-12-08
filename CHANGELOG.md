@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+- Deferred root hash computation (#1) - `rebuild_root()` now called once per `root_hash()` instead of on every insert
+  - Reduces per-block CPU from O(N * S log S) to O(S log S) where N=entries, S=stems
+  - `root_hash()` now takes `&mut self` (breaking API change in ubt crate)
+
 ### Added
 - Initial ExEx implementation with MDBX persistence
 - Backfill support via `set_with_head()`
@@ -15,7 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Known Issues
 - Reorgs not properly handled (#3)
 - Full tree loaded into memory at startup (#6)
-- Root hash recomputed on every insert (#1)
 
 ## [0.1.0] - 2024-12-08
 
