@@ -6,7 +6,7 @@
 use alloy_primitives::B256;
 use reth_libmdbx::{DatabaseFlags, Environment, Geometry, PageSize, WriteFlags};
 use std::path::Path;
-use ubt::{Stem, StemNode, STEM_LEN};
+use ubt::{Stem, StemNode, TreeKey, STEM_LEN};
 
 const STEMS_DB: &str = "ubt_stems";
 const META_DB: &str = "ubt_meta";
@@ -126,5 +126,36 @@ impl UbtDatabase {
     pub fn sync(&self) -> eyre::Result<()> {
         self.env.sync(true)?;
         Ok(())
+    }
+
+    /// Iterate stems and yield (TreeKey, B256) pairs for streaming root computation.
+    /// Entries are yielded in sorted order (by stem, then subindex).
+    pub fn iter_entries_sorted(&self) -> eyre::Result<Vec<(TreeKey, B256)>> {
+        let txn = self.env.begin_ro_txn()?;
+        let stems_db = txn.open_db(Some(STEMS_DB))?;
+
+        let mut entries = Vec::new();
+        let mut cursor = txn.cursor(&stems_db)?;
+
+        while let Some((key, value)) = cursor.next::<Vec<u8>, Vec<u8>>()? {
+            if key.len() == STEM_LEN {
+                let mut stem_bytes = [0u8; STEM_LEN];
+                stem_bytes.copy_from_slice(&key);
+                let stem = Stem::new(stem_bytes);
+                let stem_node: StemNode = bincode::deserialize(&value)?;
+
+                let mut subindices: Vec<_> = stem_node.values.keys().copied().collect();
+                subindices.sort();
+
+                for subindex in subindices {
+                    if let Some(&value) = stem_node.values.get(&subindex) {
+                        let tree_key = TreeKey::new(stem, subindex);
+                        entries.push((tree_key, value));
+                    }
+                }
+            }
+        }
+
+        Ok(entries)
     }
 }

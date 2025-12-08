@@ -15,7 +15,7 @@ use std::{collections::HashMap, path::PathBuf};
 use tracing::{debug, info, warn};
 use ubt::{
     chunkify_code, get_basic_data_key, get_code_chunk_key, get_code_hash_key, get_storage_slot_key,
-    BasicDataLeaf, Blake3Hasher, Stem, StemNode, TreeKey, UnifiedBinaryTree,
+    BasicDataLeaf, Blake3Hasher, Stem, StemNode, StreamingTreeBuilder, TreeKey, UnifiedBinaryTree,
 };
 
 use crate::persistence::{UbtDatabase, UbtHead};
@@ -62,6 +62,15 @@ impl UbtExEx {
                     expected = %head.root,
                     actual = %root,
                     "Root hash mismatch after loading - tree may be inconsistent"
+                );
+            }
+
+            if verify_root_streaming(&db, head.root)? {
+                info!("Streaming root verification passed");
+            } else {
+                warn!(
+                    expected = %head.root,
+                    "Streaming root verification failed - tree may be inconsistent"
                 );
             }
 
@@ -175,6 +184,13 @@ impl UbtExEx {
         warn!("UBT revert requested - full rebuild required for accurate state");
         Ok(())
     }
+}
+
+/// Verify root hash using streaming computation (memory-efficient).
+fn verify_root_streaming(db: &UbtDatabase, expected_root: B256) -> eyre::Result<bool> {
+    let entries = db.iter_entries_sorted()?;
+    let computed = StreamingTreeBuilder::<Blake3Hasher>::new().build_root_hash(entries);
+    Ok(computed == expected_root)
 }
 
 const KECCAK_EMPTY: B256 = B256::new([
