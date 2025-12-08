@@ -86,12 +86,12 @@ Core tree implementation:
 
 ## Current Limitations
 
-| Limitation | Impact | Planned Fix |
-|------------|--------|-------------|
-| Full tree in memory | 782GB RAM for Sepolia | #5, #6 |
-| rebuild_root on every insert | O(N*S) per block | #1, #4 |
-| MDBX write every block | High I/O | #2 |
-| No reorg support | Corrupted state on reorg | #3 |
+| Limitation                   | Impact                  | Planned Fix |
+|------------------------------|-------------------------|-------------|
+| Full tree in memory          | 782GB RAM for Sepolia   | #5, #6      |
+| rebuild_root on every insert | O(N*S) per block        | #1, #4      |
+| MDBX write every block       | High I/O                | #2          |
+| No reorg support             | Corrupted state on reorg| #3          |
 
 ## Optimization Roadmap
 
