@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 67d979d59026bbb38ad9faf323555b6be163c152adbf904756bd5163b9f0a753 # shrinks to blocks = [Block { entries: [Entry { stem: Stem(0x00000049e908fabba454180a99e1f070d54f439dfe80a50ae3afe1263299ff), subindex: 0, value: 0x0000000000000000000000000000000000000000000000000000000000000000 }] }]
+cc f235cd6f6a7c4097254b76fbd9ad35c6e26f03ef19515a03efe66350d42fef75 # shrinks to block = Block { entries: [Entry { stem: Stem(0x9fb9837f068ae95b71b4cacfac04206e021020c3642a47ae70ef15dadec076), subindex: 1, value: 0x0000000000000000000000000000000000000000000000000000000000000000 }, Entry { stem: Stem(0x9fb9837f068ae95b71b4cacfac04206e021020c3642a47ae70ef15dadec076), subindex: 1, value: 0x00076f14ec186e5dad5814c3a7aea3c4d5c954ef3b794bb9ffc78ad3910d8461 }] }

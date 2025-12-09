@@ -28,6 +28,11 @@ mod metrics;
 mod persistence;
 mod ubt_exex;
 
+#[cfg(test)]
+mod proptest_strategies;
+#[cfg(test)]
+mod property_tests;
+
 use ubt_exex::ubt_exex;
 
 fn main() -> eyre::Result<()> {

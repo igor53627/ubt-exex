@@ -48,12 +48,12 @@ use crate::persistence::{UbtDatabase, UbtHead};
 const UBT_DATA_DIR: &str = "ubt";
 
 pub struct UbtExEx {
-    db: UbtDatabase,
+    pub(crate) db: UbtDatabase,
     last_block: u64,
     last_hash: B256,
     last_root: B256,
-    pending_entries: Vec<(TreeKey, B256)>,
-    dirty_stems: HashMap<Stem, StemNode>,
+    pub(crate) pending_entries: Vec<(TreeKey, B256)>,
+    pub(crate) dirty_stems: HashMap<Stem, StemNode>,
     flush_interval: u64,
     delta_retention: u64,
     last_persisted_block: u64,
@@ -125,6 +125,12 @@ impl UbtExEx {
             last_persisted_hash,
             stem_count,
         })
+    }
+
+    /// Get the current stem count.
+    #[allow(dead_code)]
+    pub fn stem_count(&self) -> usize {
+        self.stem_count
     }
 
     /// Get the last persisted head for ExEx resumption.
@@ -441,10 +447,40 @@ impl UbtExEx {
     /// This reads all entries from MDBX and computes the root without
     /// keeping the full tree in memory. Uses rayon for parallel stem hashing.
     /// Note: still creates a Vec of all entries, so memory spikes during computation.
-    fn compute_root_streaming(&self) -> Result<B256> {
+    pub(crate) fn compute_root_streaming(&self) -> Result<B256> {
         let entries = self.db.iter_entries_sorted()?;
         let root = StreamingTreeBuilder::<Blake3Hasher>::new().build_root_hash_parallel(entries);
         Ok(root)
+    }
+
+    /// Apply deltas in reverse order to revert state changes.
+    ///
+    /// This is the core logic shared by revert operations. Given a list of deltas
+    /// (stem, subindex, old_value), applies them in reverse order to restore
+    /// previous values.
+    #[allow(dead_code)]
+    pub(crate) fn apply_deltas_reverse(
+        &mut self,
+        block_number: u64,
+        deltas: &[(Stem, u8, B256)],
+    ) -> Result<()> {
+        for (stem, subindex, old_value) in deltas.iter().rev() {
+            if !self.dirty_stems.contains_key(stem) {
+                if let Some(existing) = self.db.load_stem(stem)? {
+                    self.dirty_stems.insert(*stem, existing);
+                } else {
+                    self.dirty_stems.insert(*stem, StemNode::new(*stem));
+                }
+            }
+            let stem_node = self.dirty_stems.get_mut(stem).expect("just inserted");
+            stem_node.set_value(*subindex, *old_value);
+        }
+
+        if block_number > self.last_persisted_block {
+            self.db.delete_block_deltas(block_number)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -574,4 +610,120 @@ async fn sigterm_recv() {
 #[cfg(not(unix))]
 async fn sigterm_recv() {
     std::future::pending::<()>().await;
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    use crate::config::UbtConfig;
+    use tempfile::TempDir;
+
+    /// Test harness for property-based testing of UbtExEx.
+    ///
+    /// Wraps a UbtExEx instance with a temporary MDBX database for isolated testing.
+    /// Provides convenience methods for applying entries and taking snapshots.
+    pub struct TestHarness {
+        pub exex: UbtExEx,
+        _temp_dir: TempDir,
+    }
+
+    impl TestHarness {
+        /// Create a new test harness with a fresh temporary database.
+        ///
+        /// Uses flush_interval=1 and delta_retention=1024 for predictable behavior.
+        pub fn new() -> Self {
+            let temp_dir = TempDir::new().expect("failed to create temp dir");
+            let config = UbtConfig::for_tests(temp_dir.path().to_path_buf());
+            let exex = UbtExEx::new(&config).expect("failed to create UbtExEx");
+            Self {
+                exex,
+                _temp_dir: temp_dir,
+            }
+        }
+
+        /// Apply entries for a block and commit, returning the root hash.
+        ///
+        /// Adds the given entries to pending_entries and calls commit with the
+        /// specified block number and hash.
+        pub fn apply_entries_block(
+            &mut self,
+            block_number: u64,
+            block_hash: B256,
+            entries: Vec<(TreeKey, B256)>,
+        ) -> B256 {
+            self.exex.pending_entries.extend(entries);
+            self.exex
+                .commit(block_number, block_hash)
+                .expect("commit failed")
+        }
+
+        /// Take a snapshot of all entries in the database.
+        ///
+        /// Returns entries in sorted order (by stem, then subindex).
+        pub fn snapshot_entries(&self) -> Vec<(TreeKey, B256)> {
+            self.exex
+                .db
+                .iter_entries_sorted()
+                .expect("iter_entries_sorted failed")
+        }
+
+        /// Compute and return the current root hash via streaming.
+        pub fn snapshot_root(&self) -> B256 {
+            self.exex
+                .compute_root_streaming()
+                .expect("compute_root_streaming failed")
+        }
+    }
+
+    #[test]
+    fn test_harness_basic() {
+        let mut harness = TestHarness::new();
+
+        let stem = Stem::new([1u8; 31]);
+        let key = TreeKey::new(stem, 0);
+        let value = B256::repeat_byte(0x42);
+
+        let root = harness.apply_entries_block(1, B256::repeat_byte(0x01), vec![(key, value)]);
+        assert_ne!(root, B256::ZERO);
+
+        let entries = harness.snapshot_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0], (key, value));
+
+        let snapshot_root = harness.snapshot_root();
+        assert_eq!(root, snapshot_root);
+    }
+
+    #[test]
+    fn test_apply_deltas_reverse() {
+        let mut harness = TestHarness::new();
+
+        let stem = Stem::new([2u8; 31]);
+        let key = TreeKey::new(stem, 0);
+        let initial_value = B256::repeat_byte(0x11);
+        let updated_value = B256::repeat_byte(0x22);
+
+        harness.apply_entries_block(1, B256::repeat_byte(0x01), vec![(key, initial_value)]);
+        let root_after_block1 = harness.snapshot_root();
+
+        harness.apply_entries_block(2, B256::repeat_byte(0x02), vec![(key, updated_value)]);
+
+        let entries_before_revert = harness.snapshot_entries();
+        assert_eq!(entries_before_revert[0].1, updated_value);
+
+        let deltas = harness.exex.db.load_block_deltas(2).expect("load deltas");
+        harness
+            .exex
+            .apply_deltas_reverse(2, &deltas)
+            .expect("apply_deltas_reverse");
+
+        let dirty: Vec<_> = harness.exex.dirty_stems.drain().collect();
+        harness.exex.db.batch_update_stems(&dirty).unwrap();
+
+        let entries_after_revert = harness.snapshot_entries();
+        assert_eq!(entries_after_revert[0].1, initial_value);
+
+        let root_after_revert = harness.snapshot_root();
+        assert_eq!(root_after_block1, root_after_revert);
+    }
 }
