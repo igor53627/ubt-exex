@@ -8,8 +8,8 @@
 #   2. Uncomment the relevant [patch] section below
 #   3. Run `cargo build` - Cargo will use local paths instead of git
 
-# [patch."https://github.com/paradigmxyz/ubt"]
-# ubt = { path = "../ubt" }
+# [patch."https://github.com/igor53627/ubt-rs"]
+# ubt = { path = "../ubt-rs" }
 
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-ethereum = { path = "../reth-ubt/crates/ethereum/reth" }

@@ -12,6 +12,7 @@ pub enum UbtError {
     Serialization(#[from] bincode::Error),
 
     #[error("State extraction error: {message}")]
+    #[allow(dead_code)]
     StateExtraction { message: String },
 
     #[error("IO error: {0}")]
@@ -31,9 +32,3 @@ pub enum DatabaseError {
 }
 
 pub type Result<T> = std::result::Result<T, UbtError>;
-
-impl From<UbtError> for eyre::Report {
-    fn from(err: UbtError) -> Self {
-        eyre::eyre!(err)
-    }
-}
