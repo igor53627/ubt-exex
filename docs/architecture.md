@@ -4,7 +4,7 @@
 
 reth-ubt-exex is an Execution Extension (ExEx) that maintains EIP-7864 Unified Binary Tree state in parallel with reth's native MPT state.
 
-```
+```text
 +-----------------------------------------------------------+
 |                         reth node                         |
 |  +--------------+    +---------------------------------+  |
@@ -34,7 +34,7 @@ reth-ubt-exex is an Execution Extension (ExEx) that maintains EIP-7864 Unified B
 |                      |  - ubt_block_deltas: reorg data |  |
 |                      +---------------------------------+  |
 +-----------------------------------------------------------+
-```
+```text
 
 ## Production Readiness
 
@@ -135,7 +135,7 @@ MDBX wrapper with three tables:
 
 ### Error Types (`error.rs`)
 
-```
+```text
 UbtError
   +-- Database(DatabaseError)
   |     +-- Mdbx(String)
@@ -144,7 +144,7 @@ UbtError
   +-- Serialization(bincode::Error)
   +-- StateExtraction { message }
   +-- Io(std::io::Error)
-```
+```text
 
 ### Metrics (`metrics.rs`)
 
@@ -179,7 +179,7 @@ Core tree implementation:
 
 ## Optimization Roadmap
 
-```
+```text
 Phase 1 (P0-P1): Quick Wins
 |-- #1 Deferred root computation       [DONE] - once per root_hash() call
 |-- #2 Batch persistence               [DONE] - UBT_FLUSH_INTERVAL
@@ -193,18 +193,18 @@ Phase 2 (P2): Memory Optimization
 Phase 3 (P3): Advanced Optimizations
 |-- #4 Incremental root updates        [OPEN] - requires ubt crate changes
 +-- #7 Parallel hashing                [DONE] - rayon for stem hashing
-```
+```text
 
 ## UBT Key Layout (EIP-7864)
 
-```
+```text
 TreeKey = Stem (31 bytes) + SubIndex (1 byte)
 
 Account Basic Data:  hash(address || 0x00)[0:31] + 0x00
 Code Hash:           hash(address || 0x00)[0:31] + 0x01
 Code Chunk i:        hash(address || 0x00)[0:31] + (0x80 + i)
 Storage Slot:        hash(address || 0x01 || slot)[0:31] + slot[31]
-```
+```text
 
 ## Dependencies
 

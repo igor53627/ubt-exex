@@ -100,7 +100,7 @@ The database contains:
 
 Logs show UBT updates:
 
-```
+```text
 INFO Resuming UBT state from MDBX (not loading full tree) block=9507939 root=0x8c7f... stems=139347994
 INFO Verifying UBT root via streaming
 INFO Streaming root verification passed

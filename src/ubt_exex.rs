@@ -184,7 +184,7 @@ impl UbtExEx {
         let entry_count = entries.len();
 
         let mut deltas: Vec<(Stem, u8, B256)> = Vec::new();
-        let mut new_stems = 0usize;
+        let mut seen_new_stems: std::collections::HashSet<Stem> = std::collections::HashSet::new();
 
         for (key, value) in &entries {
             let old_value = self
@@ -199,9 +199,10 @@ impl UbtExEx {
             }
 
             let is_new_stem = !self.dirty_stems.contains_key(&key.stem)
-                && self.db.load_stem(&key.stem).ok().flatten().is_none();
+                && self.db.load_stem(&key.stem).ok().flatten().is_none()
+                && !seen_new_stems.contains(&key.stem);
             if is_new_stem {
-                new_stems += 1;
+                seen_new_stems.insert(key.stem);
             }
 
             let stem_node = self
@@ -211,7 +212,7 @@ impl UbtExEx {
             stem_node.set_value(key.subindex, *value);
         }
 
-        self.stem_count += new_stems;
+        self.stem_count += seen_new_stems.len();
 
         if !deltas.is_empty() {
             self.db.save_block_deltas(block_number, &deltas)?;
