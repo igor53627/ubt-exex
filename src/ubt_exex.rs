@@ -184,6 +184,25 @@ impl UbtExEx {
         warn!("UBT revert requested - full rebuild required for accurate state");
         Ok(())
     }
+
+    /// Get a stem node, checking dirty overlay first, then MDBX.
+    /// Used for proof generation without requiring full tree in memory.
+    pub fn get_stem(&self, stem: &Stem) -> eyre::Result<Option<StemNode>> {
+        if let Some(node) = self.dirty_stems.get(stem) {
+            return Ok(Some(node.clone()));
+        }
+        self.db.load_stem(stem)
+    }
+
+    /// Get a specific value by TreeKey, checking overlay then MDBX.
+    pub fn get_value(&self, key: &TreeKey) -> eyre::Result<Option<B256>> {
+        if let Some(node) = self.dirty_stems.get(&key.stem) {
+            if let Some(value) = node.get_value(key.subindex) {
+                return Ok(Some(value));
+            }
+        }
+        Ok(self.tree.get(key))
+    }
 }
 
 /// Verify root hash using streaming computation (memory-efficient).

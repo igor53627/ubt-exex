@@ -70,7 +70,6 @@ impl UbtDatabase {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn load_stem(&self, stem: &Stem) -> eyre::Result<Option<StemNode>> {
         let txn = self.env.begin_ro_txn()?;
         let stems_db = txn.open_db(Some(STEMS_DB))?;
