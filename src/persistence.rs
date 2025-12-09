@@ -10,6 +10,7 @@ use ubt::{Stem, StemNode, TreeKey, STEM_LEN};
 
 const STEMS_DB: &str = "ubt_stems";
 const META_DB: &str = "ubt_meta";
+const DELTAS_DB: &str = "ubt_block_deltas";
 const META_KEY_HEAD: &[u8] = b"head";
 
 pub struct UbtDatabase {
@@ -41,6 +42,7 @@ impl UbtDatabase {
         let txn = env.begin_rw_txn()?;
         txn.create_db(Some(STEMS_DB), DatabaseFlags::default())?;
         txn.create_db(Some(META_DB), DatabaseFlags::default())?;
+        txn.create_db(Some(DELTAS_DB), DatabaseFlags::default())?;
         txn.commit()?;
 
         Ok(Self { env })
@@ -156,5 +158,70 @@ impl UbtDatabase {
         }
 
         Ok(entries)
+    }
+
+    pub fn save_block_deltas(&self, block_number: u64, deltas: &[(Stem, u8, B256)]) -> eyre::Result<()> {
+        let txn = self.env.begin_rw_txn()?;
+        let deltas_db = txn.open_db(Some(DELTAS_DB))?;
+
+        let key = block_number.to_be_bytes();
+        let value = bincode::serialize(deltas)?;
+        txn.put(deltas_db.dbi(), &key, &value, WriteFlags::default())?;
+        txn.commit()?;
+
+        Ok(())
+    }
+
+    pub fn load_block_deltas(&self, block_number: u64) -> eyre::Result<Vec<(Stem, u8, B256)>> {
+        let txn = self.env.begin_ro_txn()?;
+        let deltas_db = txn.open_db(Some(DELTAS_DB))?;
+
+        let key = block_number.to_be_bytes();
+        match txn.get::<Vec<u8>>(deltas_db.dbi(), &key)? {
+            Some(bytes) => {
+                let deltas: Vec<(Stem, u8, B256)> = bincode::deserialize(&bytes)?;
+                Ok(deltas)
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
+    pub fn delete_block_deltas(&self, block_number: u64) -> eyre::Result<()> {
+        let txn = self.env.begin_rw_txn()?;
+        let deltas_db = txn.open_db(Some(DELTAS_DB))?;
+
+        let key = block_number.to_be_bytes();
+        let _ = txn.del(deltas_db.dbi(), &key, None);
+        txn.commit()?;
+
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn delete_deltas_after(&self, block_number: u64) -> eyre::Result<()> {
+        let txn = self.env.begin_rw_txn()?;
+        let deltas_db = txn.open_db(Some(DELTAS_DB))?;
+
+        let mut cursor = txn.cursor(&deltas_db)?;
+        let mut to_delete = Vec::new();
+
+        while let Some((key_bytes, _)) = cursor.next::<Vec<u8>, Vec<u8>>()? {
+            if key_bytes.len() == 8 {
+                let mut arr = [0u8; 8];
+                arr.copy_from_slice(&key_bytes);
+                let bn = u64::from_be_bytes(arr);
+                if bn > block_number {
+                    to_delete.push(key_bytes);
+                }
+            }
+        }
+        drop(cursor);
+
+        for key in to_delete {
+            txn.del(deltas_db.dbi(), &key, None)?;
+        }
+        txn.commit()?;
+
+        Ok(())
     }
 }

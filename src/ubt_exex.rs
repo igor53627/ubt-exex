@@ -21,6 +21,14 @@ use ubt::{
 use crate::persistence::{UbtDatabase, UbtHead};
 
 const UBT_DATA_DIR: &str = "ubt";
+const DEFAULT_FLUSH_INTERVAL: u64 = 1;
+
+fn get_flush_interval() -> u64 {
+    std::env::var("UBT_FLUSH_INTERVAL")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_FLUSH_INTERVAL)
+}
 
 pub struct UbtExEx {
     tree: UnifiedBinaryTree<Blake3Hasher>,
@@ -29,14 +37,20 @@ pub struct UbtExEx {
     last_hash: B256,
     pending_entries: Vec<(TreeKey, B256)>,
     dirty_stems: HashMap<Stem, StemNode>,
+    flush_interval: u64,
+    last_persisted_block: u64,
+    last_persisted_hash: B256,
 }
 
 impl UbtExEx {
     pub fn new(data_dir: PathBuf) -> eyre::Result<Self> {
         let ubt_dir = data_dir.join(UBT_DATA_DIR);
         let db = UbtDatabase::open(&ubt_dir)?;
+        let flush_interval = get_flush_interval();
 
-        let (tree, last_block, last_hash) = if let Some(head) = db.load_head()? {
+        let (tree, last_block, last_hash, last_persisted_block, last_persisted_hash) = if let Some(head) =
+            db.load_head()?
+        {
             info!(
                 block = head.block_number,
                 root = %head.root,
@@ -74,11 +88,16 @@ impl UbtExEx {
                 );
             }
 
-            (tree, head.block_number, head.block_hash)
+            (tree, head.block_number, head.block_hash, head.block_number, head.block_hash)
         } else {
             info!("Starting fresh UBT state");
-            (UnifiedBinaryTree::new(), 0, B256::ZERO)
+            (UnifiedBinaryTree::new(), 0, B256::ZERO, 0, B256::ZERO)
         };
+
+        info!(
+            flush_interval = flush_interval,
+            "UBT flush interval configured"
+        );
 
         Ok(Self {
             tree,
@@ -87,14 +106,20 @@ impl UbtExEx {
             last_hash,
             pending_entries: Vec::new(),
             dirty_stems: HashMap::new(),
+            flush_interval,
+            last_persisted_block,
+            last_persisted_hash,
         })
     }
 
     pub fn get_head(&self) -> Option<ExExHead> {
-        if self.last_block == 0 {
+        if self.last_persisted_block == 0 {
             None
         } else {
-            Some(ExExHead::new(BlockNumHash::new(self.last_block, self.last_hash)))
+            Some(ExExHead::new(BlockNumHash::new(
+                self.last_persisted_block,
+                self.last_persisted_hash,
+            )))
         }
     }
 
@@ -142,7 +167,20 @@ impl UbtExEx {
         let entries = std::mem::take(&mut self.pending_entries);
         let entry_count = entries.len();
 
+        let mut deltas: Vec<(Stem, u8, B256)> = Vec::new();
+
         for (key, value) in &entries {
+            let old_value = self
+                .dirty_stems
+                .get(&key.stem)
+                .and_then(|node| node.get_value(key.subindex))
+                .or_else(|| self.tree.get(key))
+                .unwrap_or(B256::ZERO);
+
+            if old_value != *value {
+                deltas.push((key.stem, key.subindex, old_value));
+            }
+
             self.tree.insert(key.clone(), *value);
 
             let stem_node = self
@@ -152,41 +190,135 @@ impl UbtExEx {
             stem_node.set_value(key.subindex, *value);
         }
 
+        if !deltas.is_empty() {
+            self.db.save_block_deltas(block_number, &deltas)?;
+        }
+
         let root = self.tree.root_hash();
         self.last_block = block_number;
         self.last_hash = block_hash;
 
-        let dirty: Vec<_> = self.dirty_stems.drain().collect();
-        if !dirty.is_empty() {
-            self.db.batch_update_stems(&dirty)?;
+        let should_flush = block_number <= self.last_persisted_block ||
+            (block_number - self.last_persisted_block) >= self.flush_interval;
+
+        if should_flush {
+            let dirty: Vec<_> = self.dirty_stems.drain().collect();
+            if !dirty.is_empty() {
+                self.db.batch_update_stems(&dirty)?;
+            }
+
+            let head = UbtHead {
+                block_number,
+                block_hash,
+                root,
+                stem_count: self.tree.stem_count(),
+            };
+            self.db.save_head(&head)?;
+
+            self.last_persisted_block = block_number;
+            self.last_persisted_hash = block_hash;
+
+            info!(
+                block = block_number,
+                entries = entry_count,
+                stems = self.tree.stem_count(),
+                dirty_stems = dirty.len(),
+                root = %root,
+                "UBT updated and flushed to MDBX"
+            );
+        } else {
+            debug!(
+                block = block_number,
+                entries = entry_count,
+                pending_stems = self.dirty_stems.len(),
+                blocks_until_flush = self.flush_interval - (block_number - self.last_persisted_block),
+                root = %root,
+                "UBT updated in-memory (pending flush)"
+            );
         }
-
-        let head = UbtHead {
-            block_number,
-            block_hash,
-            root,
-            stem_count: self.tree.stem_count(),
-        };
-        self.db.save_head(&head)?;
-
-        info!(
-            block = block_number,
-            entries = entry_count,
-            stems = self.tree.stem_count(),
-            root = %root,
-            "UBT updated and persisted"
-        );
 
         Ok(root)
     }
 
-    pub fn revert(&mut self, _chain: &Chain<impl NodePrimitives>) -> eyre::Result<()> {
-        warn!("UBT revert requested - full rebuild required for accurate state");
+    pub fn revert(&mut self, chain: &Chain<impl NodePrimitives>) -> eyre::Result<()> {
+        let blocks = chain.blocks();
+        let mut block_numbers: Vec<u64> = blocks.keys().copied().collect();
+        block_numbers.sort();
+        block_numbers.reverse();
+
+        let mut total_reverted = 0usize;
+        let mut reverted_persisted = false;
+
+        for block_number in &block_numbers {
+            let deltas = self.db.load_block_deltas(*block_number)?;
+
+            for (stem, subindex, old_value) in deltas.iter().rev() {
+                let key = TreeKey::new(*stem, *subindex);
+                self.tree.insert(key.clone(), *old_value);
+
+                let stem_node = self
+                    .dirty_stems
+                    .entry(*stem)
+                    .or_insert_with(|| StemNode::new(*stem));
+                stem_node.set_value(*subindex, *old_value);
+            }
+
+            total_reverted += deltas.len();
+
+            if *block_number > self.last_persisted_block {
+                self.db.delete_block_deltas(*block_number)?;
+            }
+        }
+
+        // Use parent hash from the first reverted block for correct persisted head
+        if let Some((&first_reverted_num, first_reverted_block)) = blocks.iter().min_by_key(|(num, _)| *num) {
+            if first_reverted_num > 0 {
+                self.last_block = first_reverted_num - 1;
+                self.last_hash = first_reverted_block.header().parent_hash();
+            } else {
+                self.last_block = 0;
+                self.last_hash = B256::ZERO;
+            }
+            reverted_persisted = blocks.keys().any(|&b| b <= self.last_persisted_block);
+        }
+
+        // If we reverted any persisted blocks, flush immediately to maintain consistency
+        if reverted_persisted {
+            let dirty: Vec<_> = self.dirty_stems.drain().collect();
+            if !dirty.is_empty() {
+                self.db.batch_update_stems(&dirty)?;
+            }
+
+            let root = self.tree.root_hash();
+            let head = UbtHead {
+                block_number: self.last_block,
+                block_hash: self.last_hash,
+                root,
+                stem_count: self.tree.stem_count(),
+            };
+            self.db.save_head(&head)?;
+
+            self.last_persisted_block = self.last_block;
+            self.last_persisted_hash = self.last_hash;
+        }
+
+        info!(
+            blocks = block_numbers.len(),
+            entries = total_reverted,
+            new_head = self.last_block,
+            reverted_persisted = reverted_persisted,
+            "UBT reverted blocks"
+        );
+
         Ok(())
     }
 
     /// Get a stem node, checking dirty overlay first, then MDBX.
     /// Used for proof generation without requiring full tree in memory.
+    ///
+    /// Note: Returns a clone of the StemNode. If profiling shows this is a hot path,
+    /// consider using Cow<'_, StemNode> or a closure-based API to avoid cloning.
+    #[allow(dead_code)]
     pub fn get_stem(&self, stem: &Stem) -> eyre::Result<Option<StemNode>> {
         if let Some(node) = self.dirty_stems.get(stem) {
             return Ok(Some(node.clone()));
@@ -195,6 +327,7 @@ impl UbtExEx {
     }
 
     /// Get a specific value by TreeKey, checking overlay then MDBX.
+    #[allow(dead_code)]
     pub fn get_value(&self, key: &TreeKey) -> eyre::Result<Option<B256>> {
         if let Some(node) = self.dirty_stems.get(&key.stem) {
             if let Some(value) = node.get_value(key.subindex) {
