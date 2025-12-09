@@ -5,34 +5,34 @@
 reth-ubt-exex is an Execution Extension (ExEx) that maintains EIP-7864 Unified Binary Tree state in parallel with reth's native MPT state.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        reth node                             │
-│  ┌──────────────┐    ┌─────────────────────────────────┐    │
-│  │   Consensus  │───>│      ExExNotification           │    │
-│  │    Engine    │    │  - ChainCommitted (new blocks)  │    │
-│  └──────────────┘    │  - ChainReorged (reorg)         │    │
-│                      │  - ChainReverted (revert)       │    │
-│                      └───────────────┬─────────────────┘    │
-│                                      │                       │
-│                                      v                       │
-│                      ┌─────────────────────────────────┐    │
-│                      │         UbtExEx                 │    │
-│                      │  ┌───────────────────────────┐  │    │
-│                      │  │   UnifiedBinaryTree       │  │    │
-│                      │  │   (in-memory HashMap)     │  │    │
-│                      │  └───────────────────────────┘  │    │
-│                      │  ┌───────────────────────────┐  │    │
-│                      │  │   dirty_stems overlay     │  │    │
-│                      │  └───────────────────────────┘  │    │
-│                      └───────────────┬─────────────────┘    │
-│                                      │                       │
-│                                      v                       │
-│                      ┌─────────────────────────────────┐    │
-│                      │         MDBX Database           │    │
-│                      │  - ubt_stems: Stem -> StemNode  │    │
-│                      │  - ubt_meta: head block/root    │    │
-│                      └─────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                         reth node                         │
+│  ┌──────────────┐    ┌─────────────────────────────────┐  │
+│  │   Consensus  │───>│      ExExNotification           │  │
+│  │    Engine    │    │  - ChainCommitted (new blocks)  │  │
+│  └──────────────┘    │  - ChainReorged (reorg)         │  │
+│                      │  - ChainReverted (revert)       │  │
+│                      └───────────────┬─────────────────┘  │
+│                                      │                    │
+│                                      v                    │
+│                      ┌─────────────────────────────────┐  │
+│                      │         UbtExEx                 │  │
+│                      │  ┌───────────────────────────┐  │  │
+│                      │  │   UnifiedBinaryTree       │  │  │
+│                      │  │   (in-memory HashMap)     │  │  │
+│                      │  └───────────────────────────┘  │  │
+│                      │  ┌───────────────────────────┐  │  │
+│                      │  │   dirty_stems overlay     │  │  │
+│                      │  └───────────────────────────┘  │  │
+│                      └───────────────┬─────────────────┘  │
+│                                      │                    │
+│                                      v                    │
+│                      ┌─────────────────────────────────┐  │
+│                      │         MDBX Database           │  │
+│                      │  - ubt_stems: Stem -> StemNode  │  │
+│                      │  - ubt_meta: head block/root    │  │
+│                      └─────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────┘
 ```
 
 ## Data Flow
@@ -86,12 +86,12 @@ Core tree implementation:
 
 ## Current Limitations
 
-| Limitation | Impact | Planned Fix |
-|------------|--------|-------------|
-| Full tree in memory | 782GB RAM for Sepolia | #5, #6 |
-| rebuild_root on every insert | O(N*S) per block | #1, #4 |
-| MDBX write every block | High I/O | #2 |
-| No reorg support | Corrupted state on reorg | #3 |
+| Limitation                   | Impact                  | Planned Fix |
+|------------------------------|-------------------------|-------------|
+| Full tree in memory          | 782GB RAM for Sepolia   | #5, #6      |
+| rebuild_root on every insert | O(N*S) per block        | #1, #4      |
+| MDBX write every block       | High I/O                | #2          |
+| No reorg support             | Corrupted state on reorg| #3          |
 
 ## Optimization Roadmap
 
