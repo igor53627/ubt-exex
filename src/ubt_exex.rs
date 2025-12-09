@@ -327,18 +327,7 @@ impl UbtExEx {
                 );
             }
 
-            for (stem, subindex, old_value) in deltas.iter().rev() {
-                if !self.dirty_stems.contains_key(stem) {
-                    if let Some(existing) = self.db.load_stem(stem)? {
-                        self.dirty_stems.insert(*stem, existing);
-                    } else {
-                        self.dirty_stems.insert(*stem, StemNode::new(*stem));
-                    }
-                }
-                let stem_node = self.dirty_stems.get_mut(stem).expect("just inserted");
-                stem_node.set_value(*subindex, *old_value);
-            }
-
+            self.apply_deltas_reverse(*block_number, &deltas)?;
             total_reverted += deltas.len();
 
             if *block_number > self.last_persisted_block {

@@ -78,20 +78,7 @@ impl UbtConfig {
             Err(_) => self.delta_retention,
         }
     }
-}
 
-impl Default for UbtConfig {
-    fn default() -> Self {
-        Self {
-            data_dir: None,
-            flush_interval: DEFAULT_FLUSH_INTERVAL,
-            delta_retention: DEFAULT_DELTA_RETENTION,
-            disabled: false,
-        }
-    }
-}
-
-impl UbtConfig {
     /// Create a config for testing with explicit data directory.
     ///
     /// Uses flush_interval=1 and delta_retention=1024 for predictable test behavior.
@@ -101,6 +88,17 @@ impl UbtConfig {
             data_dir: Some(data_dir),
             flush_interval: 1,
             delta_retention: 1024,
+            disabled: false,
+        }
+    }
+}
+
+impl Default for UbtConfig {
+    fn default() -> Self {
+        Self {
+            data_dir: None,
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            delta_retention: DEFAULT_DELTA_RETENTION,
             disabled: false,
         }
     }

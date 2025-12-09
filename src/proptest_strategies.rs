@@ -9,15 +9,21 @@ pub const MAX_SUBINDICES: u8 = 8;
 pub const MAX_BLOCKS: usize = 5;
 pub const MAX_ENTRIES_PER_BLOCK: usize = 10;
 
+/// A single entry representing a (stem, subindex) -> value mapping for testing.
 #[derive(Clone, Debug)]
 pub struct Entry {
+    /// The stem portion of the tree key.
     pub stem: Stem,
+    /// The subindex within the stem (0-255).
     pub subindex: u8,
+    /// The 32-byte value to store.
     pub value: B256,
 }
 
+/// A block of entries for testing, representing state changes in a single block.
 #[derive(Clone, Debug)]
 pub struct Block {
+    /// The entries in this block.
     pub entries: Vec<Entry>,
 }
 
