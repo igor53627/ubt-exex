@@ -54,10 +54,13 @@ impl UbtConfig {
         if self.flush_interval != DEFAULT_FLUSH_INTERVAL {
             return self.flush_interval;
         }
-        std::env::var("UBT_FLUSH_INTERVAL")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(self.flush_interval)
+        match std::env::var("UBT_FLUSH_INTERVAL") {
+            Ok(s) => s.parse().unwrap_or_else(|_| {
+                tracing::warn!(value = %s, "Invalid UBT_FLUSH_INTERVAL, using default");
+                self.flush_interval
+            }),
+            Err(_) => self.flush_interval,
+        }
     }
 
     /// Get delta retention, with env var fallback for backwards compatibility.
@@ -67,10 +70,13 @@ impl UbtConfig {
         if self.delta_retention != DEFAULT_DELTA_RETENTION {
             return self.delta_retention;
         }
-        std::env::var("UBT_DELTA_RETENTION")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(self.delta_retention)
+        match std::env::var("UBT_DELTA_RETENTION") {
+            Ok(s) => s.parse().unwrap_or_else(|_| {
+                tracing::warn!(value = %s, "Invalid UBT_DELTA_RETENTION, using default");
+                self.delta_retention
+            }),
+            Err(_) => self.delta_retention,
+        }
     }
 }
 

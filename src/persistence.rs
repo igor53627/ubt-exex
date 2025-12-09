@@ -288,7 +288,14 @@ impl UbtDatabase {
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
 
         let key = block_number.to_be_bytes();
-        let _ = txn.del(deltas_db.dbi(), &key, None);
+        if let Err(e) = txn.del(deltas_db.dbi(), &key, None) {
+            if !matches!(e, reth_libmdbx::Error::NotFound) {
+                return Err(UbtError::Database(DatabaseError::Mdbx(format!(
+                    "Failed to delete deltas for block {}: {}",
+                    block_number, e
+                ))));
+            }
+        }
         txn.commit()
             .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
 

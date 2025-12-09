@@ -95,7 +95,7 @@ Core tree implementation:
 
 ## Optimization Roadmap
 
-```
+```text
 Phase 1 (P0-P1): Quick Wins
 ├── #1 Deferred root computation       [OPEN]
 ├── #2 Batch persistence               [DONE] - UBT_FLUSH_INTERVAL
