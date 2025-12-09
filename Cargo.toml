@@ -11,16 +11,20 @@ path = "src/main.rs"
 
 [dependencies]
 # UBT implementation
-ubt = { path = "../ubt", features = ["serde"] }
+# TODO: Update to specific release tag once available
+ubt = { git = "https://github.com/igor53627/ubt-rs", branch = "main", features = ["serde"] }
 
-# Reth dependencies (path to local reth-ubt checkout)
-reth-ethereum = { path = "../reth-ubt/crates/ethereum/reth", features = ["full", "cli"] }
-reth-exex = { path = "../reth-ubt/crates/exex/exex" }
-reth-exex-types = { path = "../reth-ubt/crates/exex/types" }
-reth-execution-types = { path = "../reth-ubt/crates/evm/execution-types" }
-reth-tracing = { path = "../reth-ubt/crates/tracing" }
-reth-node-api = { path = "../reth-ubt/crates/node/api" }
-reth-primitives-traits = { path = "../reth-ubt/crates/primitives-traits" }
+# Reth dependencies
+# TODO: Update to specific release tag once available
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "main", features = ["full", "cli"] }
+reth-exex = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
+reth-exex-types = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
+reth-libmdbx = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
 
 # Alloy primitives
 alloy-primitives = "1"
@@ -35,15 +39,20 @@ clap = { version = "4", features = ["derive"] }
 
 # Error handling
 eyre = "0.6"
+thiserror = "1.0"
 
 # Serialization (for persistence)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 bincode = "1.3"
 
-# Database (MDBX for tree persistence)
-reth-db = { path = "../reth-ubt/crates/storage/db" }
-reth-libmdbx = { path = "../reth-ubt/crates/storage/libmdbx-rs" }
-
 # Logging
 tracing = "0.1"
+
+# Metrics
+reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
+metrics = "0.24"
+
+[dev-dependencies]
+tempfile = "3"
+proptest = "1.0"

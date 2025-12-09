@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Production readiness improvements (#13):
+  - Custom error types with `thiserror` (#18)
+  - Prometheus-compatible metrics (#16)
+  - CLI configuration support via clap (#17)
+  - Delta pruning for finalized blocks (#19)
+  - Graceful shutdown with state flush (#20)
+  - Comprehensive test suite for persistence layer (#15)
+- `shutdown()` method for graceful ExEx termination
+- `prune_deltas_before()` for bounded delta storage
+- `UbtConfig` struct for configuration management
+
+### Changed
+- Dependencies now use git URLs instead of local paths (#14)
+- Added `.cargo/config.toml` for local development overrides
+- Improved documentation throughout (#21)
+
 ### Performance
 - Deferred root hash computation (#1) - `rebuild_root()` now called once per `root_hash()` instead of on every insert
   - Reduces per-block CPU from O(N * S log S) to O(S log S) where N=entries, S=stems
@@ -22,14 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Stores old values before applying state changes
   - Reverts apply deltas in LIFO order (newest block first, within-block reversed)
   - Deltas for persisted blocks preserved for crash recovery
-
-### Added
-- `iter_entries_sorted()` for streaming MDBX iteration
-- `verify_root_streaming()` helper function
-- `get_stem()` and `get_value()` overlay-aware getters
-- Initial ExEx implementation with MDBX persistence
-- Backfill support via `set_with_head()`
-- State extraction from `BundleState` (accounts, storage, code)
 
 ### Known Issues
 - Full tree still loaded into memory at startup (streaming is verification only)

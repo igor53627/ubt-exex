@@ -86,28 +86,28 @@ Core tree implementation:
 
 ## Current Limitations
 
-| Limitation                   | Impact                  | Planned Fix |
+| Limitation                   | Impact                  | Status      |
 |------------------------------|-------------------------|-------------|
-| Full tree in memory          | 782GB RAM for Sepolia   | #5, #6      |
-| rebuild_root on every insert | O(N*S) per block        | #1, #4      |
-| MDBX write every block       | High I/O                | #2          |
-| No reorg support             | Corrupted state on reorg| #3          |
+| Full tree in memory          | 782GB RAM for Sepolia   | Open (#5, #6) |
+| rebuild_root on every insert | O(N*S) per block        | Open (#4)   |
+| ~~MDBX write every block~~   | ~~High I/O~~            | ✅ Fixed (#2) - configurable flush interval |
+| ~~No reorg support~~         | ~~Corrupted state~~     | ✅ Fixed (#3) - delta-based reverts |
 
 ## Optimization Roadmap
 
-```
+```text
 Phase 1 (P0-P1): Quick Wins
-├── #1 Deferred root computation
-├── #2 Batch persistence
-└── #3 Reorg handling (correctness)
+├── #1 Deferred root computation       [OPEN]
+├── #2 Batch persistence               [DONE] - UBT_FLUSH_INTERVAL
+└── #3 Reorg handling (correctness)    [DONE] - delta storage & reverts
 
 Phase 2 (P2): Architectural Improvements  
-├── #4 Incremental root updates
-└── #5 MDBX-backed reads
+├── #4 Incremental root updates        [OPEN]
+└── #5 MDBX-backed reads               [OPEN]
 
 Phase 3 (P3): Advanced Optimizations
-├── #6 Streaming tree builder
-└── #7 Parallel hashing
+├── #6 Streaming tree builder          [PARTIAL] - verify_root_streaming
+└── #7 Parallel hashing                [OPEN]
 ```
 
 ## UBT Key Layout (EIP-7864)
@@ -123,6 +123,6 @@ Storage Slot:        hash(address || 0x01 || slot)[0:31] + slot[31]
 
 ## Dependencies
 
-- **ubt crate** (`../ubt`): Core tree, hashing, key derivation
-- **reth** (`../reth-ubt`): Local fork with ExEx framework
+- **ubt crate** (github.com/paradigmxyz/ubt): Core tree, hashing, key derivation
+- **reth** (github.com/paradigmxyz/reth): ExEx framework and MDBX bindings
 - **reth-libmdbx**: Database backend

@@ -33,8 +33,8 @@ The UBT root is computed and persisted after each block, enabling stateless Ethe
 |                               |                 |
 |                               v                 |
 |                      +----------------------+   |
-|                      |   ubt_state.json     |   |
-|                      |   (persistent)       |   |
+|                      |    MDBX Database     |   |
+|                      |    (persistent)      |   |
 |                      +----------------------+   |
 +-------------------------------------------------+
 ```
@@ -44,6 +44,19 @@ The UBT root is computed and persisted after each block, enabling stateless Ethe
 ### Build
 
 ```bash
+cargo build --release
+```
+
+### Local Development
+
+For development with local checkouts of `ubt` or `reth`, edit `.cargo/config.toml` and uncomment the relevant `[patch]` sections:
+
+```bash
+# Clone dependencies to sibling directories
+git clone https://github.com/paradigmxyz/ubt ../ubt
+git clone https://github.com/paradigmxyz/reth ../reth-ubt
+
+# Edit .cargo/config.toml to uncomment patches, then build
 cargo build --release
 ```
 
@@ -100,13 +113,30 @@ INFO UBT updated and persisted block=9507940 entries=1234 stems=139348000 root=0
 
 4. **Root Computation**: After processing all changes, compute `tree.root_hash()`
 
-5. **Persistence**: Save state to JSON for restart recovery
+5. **Persistence**: Flush dirty stems to MDBX for restart recovery
+
+## Configuration
+
+Environment variables:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `RETH_DATA_DIR` | Base directory for data storage | `.` (current directory) |
+| `UBT_FLUSH_INTERVAL` | Blocks between MDBX flushes | `1` |
+| `UBT_DELTA_RETENTION` | Blocks to retain deltas for reorgs | `256` |
+
+Example:
+
+```bash
+RETH_DATA_DIR=/data UBT_FLUSH_INTERVAL=10 UBT_DELTA_RETENTION=1000 \
+  ./target/release/reth-ubt node --chain sepolia
+```
 
 ## Backfill Support
 
 The plugin supports automatic backfill when restarting:
 
-1. On startup, it loads the persisted `ubt_state.json` 
+1. On startup, it loads the persisted state from MDBX
 2. If a head exists, it calls `ctx.notifications.set_with_head(head)`
 3. reth's ExEx framework automatically backfills blocks from the persisted head to the current node head
 4. This allows catching up after downtime without losing UBT state
@@ -119,11 +149,37 @@ The plugin supports automatic backfill when restarting:
 - Automatically backfills any blocks missed during downtime
 - Continues from where it left off
 
+## Metrics
+
+Metrics are collected internally but not yet exposed. Planned metrics include:
+- `ubt_block_processing_time_seconds` - Time to process each block
+- `ubt_root_computation_time_seconds` - Time to compute root hash
+- `ubt_persistence_time_seconds` - Time to flush to MDBX
+- `ubt_stem_count` - Total number of stems in the tree
+- `ubt_dirty_stems` - Number of stems pending flush
+
 ## Limitations
 
-- **Reorgs**: Currently logs a warning and continues; accurate reorg handling requires full state rebuild or revert support in UBT
 - **Initial Sync**: For an already-synced node, you may want to run the migration tool first to build the initial UBT state faster than backfilling from genesis
-- **Memory**: Large state changes may require significant memory
+- **Memory**: Large state changes may require significant memory (full tree in RAM)
+
+## Troubleshooting
+
+### Root hash mismatch on startup
+
+If you see "Root hash mismatch after loading", the database may be corrupted. Delete the `ubt/` directory and restart to rebuild from scratch.
+
+### Out of memory
+
+The full tree is kept in memory. For Sepolia (~100M stems), expect ~80GB+ RAM usage. Reduce memory by:
+- Using a smaller chain (local devnet)
+- Waiting for MDBX-backed reads optimization (#5)
+
+### Slow block processing
+
+If blocks take >100ms to process:
+- Increase `UBT_FLUSH_INTERVAL` to batch writes
+- Check disk I/O (MDBX is write-heavy)
 
 ## Integration with reth-ubt-migration
 
