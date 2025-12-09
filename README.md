@@ -9,7 +9,7 @@ This ExEx plugin receives block notifications from reth and maintains a Unified 
 - Code hash and bytecode chunks
 - Storage slots
 
-The UBT root is computed and persisted after each block, enabling stateless Ethereum experimentation.
+The UBT root is computed via streaming from MDBX and persisted on each flush, enabling stateless Ethereum experimentation.
 
 ## Architecture
 
@@ -26,18 +26,28 @@ The UBT root is computed and persisted after each block, enabling stateless Ethe
 |                               v                 |
 |                      +----------------------+   |
 |                      |    UBT ExEx Plugin   |   |
-|                      | - Extract state delta|   |
-|                      | - Update UBT         |   |
-|                      | - Compute root hash  |   |
+|                      | - dirty_stems overlay|   |
+|                      | - MDBX state store   |   |
+|                      | - Streaming root     |   |
 |                      +----------------------+   |
 |                               |                 |
 |                               v                 |
 |                      +----------------------+   |
 |                      |    MDBX Database     |   |
-|                      |    (persistent)      |   |
+|                      |  (canonical state)   |   |
 |                      +----------------------+   |
 +-------------------------------------------------+
 ```
+
+## Memory Model
+
+State is stored in MDBX (canonical) with a small dirty overlay in memory:
+- Full tree is NOT loaded at startup
+- Reads: dirty overlay -> MDBX fallback
+- Writes: accumulate in overlay, flush to MDBX periodically
+- Root: computed via streaming from MDBX on flush
+
+**Memory usage**: <1GB baseline (spike during root computation)
 
 ## Usage
 
@@ -53,8 +63,8 @@ For development with local checkouts of `ubt` or `reth`, edit `.cargo/config.tom
 
 ```bash
 # Clone dependencies to sibling directories
-git clone https://github.com/paradigmxyz/ubt ../ubt
-git clone https://github.com/paradigmxyz/reth ../reth-ubt
+git clone https://github.com/igor53627/ubt-rs ../ubt-rs
+git clone https://github.com/paradigmxyz/reth ../reth
 
 # Edit .cargo/config.toml to uncomment patches, then build
 cargo build --release
@@ -86,34 +96,33 @@ ubt/
 The database contains:
 - `ubt_stems` table: All stem nodes (31-byte stem -> serialized StemNode)
 - `ubt_meta` table: Metadata including current head block and root hash
+- `ubt_block_deltas` table: Per-block deltas for reorg handling
 
-Logs show UBT updates per block:
+Logs show UBT updates:
 
-```
-INFO UBT ExEx started with MDBX persistence
-INFO Loading UBT state from MDBX block=9507939 root=0x8c7f... stems=139347994
-INFO Loaded stems from database loaded=139347994
-INFO UBT updated and persisted block=9507940 entries=1234 stems=139348000 root=0x...
+```text
+INFO Resuming UBT state from MDBX (not loading full tree) block=9507939 root=0x8c7f... stems=139347994
+INFO Verifying UBT root via streaming
+INFO Streaming root verification passed
+INFO UBT updated and flushed to MDBX block=9507940 entries=1234 stems=139348000 root=0x...
 ```
 
 ## How It Works
 
-1. **Block Notification**: reth sends `ChainCommitted` notifications containing the execution outcome (state changes)
+1. **Block Notification**: reth sends `ChainCommitted` notifications containing the execution outcome
 
-2. **State Extraction**: The plugin extracts from `BundleState`:
+2. **State Extraction**: Extract from `BundleState`:
    - Account info changes (nonce, balance, code)
    - Storage slot changes
    - New bytecode deployments
 
-3. **UBT Update**: For each change, compute the UBT key and insert:
-   - `get_basic_data_key(address)` -> BasicDataLeaf
-   - `get_code_hash_key(address)` -> code_hash
-   - `get_code_chunk_key(address, i)` -> chunk[i]
-   - `get_storage_slot_key(address, slot)` -> value
+3. **Delta Recording**: Store old values for reorg support
 
-4. **Root Computation**: After processing all changes, compute `tree.root_hash()`
+4. **Overlay Update**: Update dirty stems overlay (in-memory)
 
-5. **Persistence**: Flush dirty stems to MDBX for restart recovery
+5. **Flush to MDBX**: On flush interval, write overlay to MDBX
+
+6. **Root Computation**: Compute root via streaming from MDBX using `StreamingTreeBuilder`
 
 ## Configuration
 
@@ -136,50 +145,52 @@ RETH_DATA_DIR=/data UBT_FLUSH_INTERVAL=10 UBT_DELTA_RETENTION=1000 \
 
 The plugin supports automatic backfill when restarting:
 
-1. On startup, it loads the persisted state from MDBX
-2. If a head exists, it calls `ctx.notifications.set_with_head(head)`
+1. On startup, verifies persisted root via streaming (does not load full tree)
+2. If a head exists, calls `ctx.notifications.set_with_head(head)`
 3. reth's ExEx framework automatically backfills blocks from the persisted head to the current node head
-4. This allows catching up after downtime without losing UBT state
 
 **Fresh start (no persisted state):**
 - Will process blocks as they arrive
 - For existing synced nodes, use the migration tool first for faster initial sync
 
 **Restart with persisted state:**
+- Verifies root hash via streaming
 - Automatically backfills any blocks missed during downtime
-- Continues from where it left off
 
 ## Metrics
 
-Metrics are collected internally but not yet exposed. Planned metrics include:
-- `ubt_block_processing_time_seconds` - Time to process each block
-- `ubt_root_computation_time_seconds` - Time to compute root hash
-- `ubt_persistence_time_seconds` - Time to flush to MDBX
-- `ubt_stem_count` - Total number of stems in the tree
-- `ubt_dirty_stems` - Number of stems pending flush
+Prometheus-compatible metrics are exposed:
 
-## Limitations
-
-- **Initial Sync**: For an already-synced node, you may want to run the migration tool first to build the initial UBT state faster than backfilling from genesis
-- **Memory**: Large state changes may require significant memory (full tree in RAM)
+| Metric | Type | Description |
+|--------|------|-------------|
+| `ubt_exex_blocks_processed_total` | Counter | Total blocks processed |
+| `ubt_exex_entries_per_block` | Histogram | State changes per block |
+| `ubt_exex_stems_total` | Gauge | Total stems in tree |
+| `ubt_exex_root_computation_seconds` | Histogram | Root hash computation time |
+| `ubt_exex_persistence_seconds` | Histogram | MDBX write time |
+| `ubt_exex_dirty_stems` | Gauge | Pending stems in overlay |
+| `ubt_exex_reverts_total` | Counter | Revert operations |
 
 ## Troubleshooting
 
-### Root hash mismatch on startup
+### Root verification failed on startup
 
-If you see "Root hash mismatch after loading", the database may be corrupted. Delete the `ubt/` directory and restart to rebuild from scratch.
+If you see "Streaming root verification failed", the database may be inconsistent. Options:
+- Delete the `ubt/` directory and rebuild from scratch
+- Check for incomplete shutdown (use graceful shutdown with SIGTERM)
 
-### Out of memory
+### Slow root computation
 
-The full tree is kept in memory. For Sepolia (~100M stems), expect ~80GB+ RAM usage. Reduce memory by:
-- Using a smaller chain (local devnet)
-- Waiting for MDBX-backed reads optimization (#5)
+Root is computed via streaming on each flush. To reduce frequency:
+- Increase `UBT_FLUSH_INTERVAL` (e.g., 10-100 blocks)
+- Trade-off: larger overlay memory between flushes
 
-### Slow block processing
+### Reorg handling
 
-If blocks take >100ms to process:
-- Increase `UBT_FLUSH_INTERVAL` to batch writes
-- Check disk I/O (MDBX is write-heavy)
+Deltas are stored per-block for reorg support:
+- Default retention: 256 blocks
+- Increase `UBT_DELTA_RETENTION` for deeper reorg support
+- If reorg exceeds retention, warning is logged and state may be inconsistent
 
 ## Integration with reth-ubt-migration
 
@@ -190,8 +201,7 @@ For existing nodes, first run the migration tool to build the initial UBT:
 cd ../reth-ubt-migration
 cargo run --release -- --datadir ~/.local/share/reth/sepolia
 
-# 2. Copy the UBT state (or start fresh with ExEx)
-# 3. Run reth with UBT ExEx to maintain state going forward
+# 2. Run reth with UBT ExEx to maintain state going forward
 cd ../reth-ubt-exex
 ./target/release/reth-ubt node --chain sepolia
 ```
@@ -203,18 +213,18 @@ cd ../reth-ubt-exex
 
 ## Roadmap
 
-See [GitHub Issues](https://github.com/igor53627/reth-ubt-exex/issues) for optimization tracking:
+| Status | Description |
+|--------|-------------|
+| Done | Deferred root computation, batch persistence, reorg handling |
+| Done | MDBX-backed reads, streaming root computation |
+| Open | Incremental root updates (requires ubt crate changes) |
+| Open | Parallel hashing |
 
-| Priority | Issue | Description |
-|----------|-------|-------------|
-| P0 | #1 | Deferred root hash computation |
-| P1 | #2, #3 | Batch persistence, reorg handling |
-| P2 | #4, #5 | Incremental updates, MDBX-backed reads |
-| P3 | #6, #7 | Streaming loader, parallel hashing |
+See [GitHub Issues](https://github.com/igor53627/reth-ubt-exex/issues) for details.
 
 ## Dependencies
 
-- [ubt](https://github.com/paradigmxyz/ubt) - Unified Binary Tree implementation
+- [ubt](https://github.com/igor53627/ubt-rs) - Unified Binary Tree implementation
 - [reth](https://github.com/paradigmxyz/reth) - Ethereum execution client
 
 ## License

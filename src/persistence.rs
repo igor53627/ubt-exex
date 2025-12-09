@@ -133,6 +133,13 @@ impl UbtDatabase {
         }
     }
 
+    /// Load a specific value by TreeKey from MDBX.
+    pub fn load_value(&self, key: &TreeKey) -> Result<Option<B256>> {
+        Ok(self
+            .load_stem(&key.stem)?
+            .and_then(|node| node.get_value(key.subindex)))
+    }
+
     pub fn batch_update_stems(&self, updates: &[(Stem, StemNode)]) -> Result<()> {
         if updates.is_empty() {
             return Ok(());
@@ -158,6 +165,7 @@ impl UbtDatabase {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn iter_stems(&self) -> Result<Vec<(Stem, StemNode)>> {
         let txn = self
             .env

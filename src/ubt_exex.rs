@@ -8,8 +8,18 @@
 //! The ExEx receives block notifications from reth and:
 //! 1. Extracts state changes from the `BundleState`
 //! 2. Converts changes to UBT key-value pairs
-//! 3. Updates the in-memory tree and dirty overlay
+//! 3. Updates the dirty overlay (in-memory)
 //! 4. Periodically flushes to MDBX for durability
+//! 5. Computes root hash from MDBX + overlay using streaming
+//!
+//! # Memory Model
+//!
+//! State is stored in MDBX (canonical) with a small dirty overlay in memory.
+//! The full tree is NOT loaded at startup - only the overlay accumulates changes
+//! between flushes. This reduces memory from ~80GB+ to <1GB for large state.
+//!
+//! When mutating a stem, the overlay is seeded from MDBX if not already present.
+//! This ensures all subindex values are preserved when updating a single subindex.
 //!
 //! # Reorg Handling
 //!
@@ -28,7 +38,7 @@ use std::{collections::HashMap, time::Instant};
 use tracing::{debug, info, warn};
 use ubt::{
     chunkify_code, get_basic_data_key, get_code_chunk_key, get_code_hash_key, get_storage_slot_key,
-    BasicDataLeaf, Blake3Hasher, Stem, StemNode, StreamingTreeBuilder, TreeKey, UnifiedBinaryTree,
+    BasicDataLeaf, Blake3Hasher, Stem, StemNode, StreamingTreeBuilder, TreeKey,
 };
 
 use crate::config::UbtConfig;
@@ -38,20 +48,24 @@ use crate::persistence::{UbtDatabase, UbtHead};
 const UBT_DATA_DIR: &str = "ubt";
 
 pub struct UbtExEx {
-    tree: UnifiedBinaryTree<Blake3Hasher>,
     db: UbtDatabase,
     last_block: u64,
     last_hash: B256,
+    last_root: B256,
     pending_entries: Vec<(TreeKey, B256)>,
     dirty_stems: HashMap<Stem, StemNode>,
     flush_interval: u64,
     delta_retention: u64,
     last_persisted_block: u64,
     last_persisted_hash: B256,
+    stem_count: usize,
 }
 
 impl UbtExEx {
     /// Create a new UBT ExEx instance with the given configuration.
+    ///
+    /// Note: Does NOT load the full tree into memory. State is read from MDBX
+    /// on demand with a dirty overlay for pending changes.
     pub fn new(config: &UbtConfig) -> Result<Self> {
         let data_dir = config.get_data_dir();
         let ubt_dir = data_dir.join(UBT_DATA_DIR);
@@ -59,52 +73,38 @@ impl UbtExEx {
         let flush_interval = config.get_flush_interval();
         let delta_retention = config.get_delta_retention();
 
-        let (tree, last_block, last_hash, last_persisted_block, last_persisted_hash) = if let Some(head) =
-            db.load_head()?
-        {
-            info!(
-                block = head.block_number,
-                root = %head.root,
-                stems = head.stem_count,
-                "Loading UBT state from MDBX"
-            );
+        let (last_block, last_hash, last_root, last_persisted_block, last_persisted_hash, stem_count) =
+            if let Some(head) = db.load_head()? {
+                info!(
+                    block = head.block_number,
+                    root = %head.root,
+                    stems = head.stem_count,
+                    "Resuming UBT state from MDBX (not loading full tree)"
+                );
 
-            let mut tree = UnifiedBinaryTree::with_capacity(head.stem_count);
-
-            let stems = db.iter_stems()?;
-            info!(loaded = stems.len(), "Loaded stems from database");
-
-            for (stem, stem_node) in stems {
-                for (&subindex, &value) in &stem_node.values {
-                    let key = TreeKey::new(stem, subindex);
-                    tree.insert(key, value);
+                info!("Verifying UBT root via streaming; this may take a while on large state");
+                let computed = compute_root_streaming(&db)?;
+                if computed == head.root {
+                    info!("Streaming root verification passed");
+                } else {
+                    return Err(crate::error::UbtError::RootVerificationFailed {
+                        expected: format!("{}", head.root),
+                        computed: format!("{}", computed),
+                    });
                 }
-            }
 
-            let root = tree.root_hash();
-            if root != head.root {
-                warn!(
-                    expected = %head.root,
-                    actual = %root,
-                    "Root hash mismatch after loading - tree may be inconsistent"
-                );
-            }
-
-            info!("Verifying UBT root via streaming; this may take a while on large state");
-            if verify_root_streaming(&db, head.root)? {
-                info!("Streaming root verification passed");
+                (
+                    head.block_number,
+                    head.block_hash,
+                    head.root,
+                    head.block_number,
+                    head.block_hash,
+                    head.stem_count,
+                )
             } else {
-                warn!(
-                    expected = %head.root,
-                    "Streaming root verification failed - tree may be inconsistent"
-                );
-            }
-
-            (tree, head.block_number, head.block_hash, head.block_number, head.block_hash)
-        } else {
-            info!("Starting fresh UBT state");
-            (UnifiedBinaryTree::new(), 0, B256::ZERO, 0, B256::ZERO)
-        };
+                info!("Starting fresh UBT state");
+                (0, B256::ZERO, B256::ZERO, 0, B256::ZERO, 0)
+            };
 
         info!(
             flush_interval = flush_interval,
@@ -113,16 +113,17 @@ impl UbtExEx {
         );
 
         Ok(Self {
-            tree,
             db,
             last_block,
             last_hash,
+            last_root,
             pending_entries: Vec::new(),
             dirty_stems: HashMap::new(),
             flush_interval,
             delta_retention,
             last_persisted_block,
             last_persisted_hash,
+            stem_count,
         })
     }
 
@@ -182,46 +183,50 @@ impl UbtExEx {
         Ok(())
     }
 
+    /// Commit pending entries to the UBT state for the given block.
+    ///
+    /// Returns the UBT root hash. Note: the returned root is only updated on flush
+    /// (every `flush_interval` blocks). Between flushes, returns the last persisted root.
+    /// This is a performance optimization - the true tip root could be computed on demand
+    /// but would require merging dirty overlay with MDBX for every block.
     pub fn commit(&mut self, block_number: u64, block_hash: B256) -> Result<B256> {
         let entries = std::mem::take(&mut self.pending_entries);
         let entry_count = entries.len();
 
         let mut deltas: Vec<(Stem, u8, B256)> = Vec::new();
+        let mut seen_new_stems: std::collections::HashSet<Stem> = std::collections::HashSet::new();
 
         for (key, value) in &entries {
-            let old_value = self
-                .dirty_stems
-                .get(&key.stem)
-                .and_then(|node| node.get_value(key.subindex))
-                .or_else(|| self.tree.get(key))
-                .unwrap_or(B256::ZERO);
+            if !self.dirty_stems.contains_key(&key.stem) {
+                if let Some(existing) = self.db.load_stem(&key.stem)? {
+                    self.dirty_stems.insert(key.stem, existing);
+                } else {
+                    seen_new_stems.insert(key.stem);
+                    self.dirty_stems.insert(key.stem, StemNode::new(key.stem));
+                }
+            }
+
+            let stem_node = self.dirty_stems.get_mut(&key.stem).expect("just inserted");
+            let old_value = stem_node.get_value(key.subindex).unwrap_or(B256::ZERO);
 
             if old_value != *value {
                 deltas.push((key.stem, key.subindex, old_value));
             }
 
-            self.tree.insert(key.clone(), *value);
-
-            let stem_node = self
-                .dirty_stems
-                .entry(key.stem)
-                .or_insert_with(|| StemNode::new(key.stem));
             stem_node.set_value(key.subindex, *value);
         }
+
+        self.stem_count += seen_new_stems.len();
 
         if !deltas.is_empty() {
             self.db.save_block_deltas(block_number, &deltas)?;
         }
 
-        let root_start = Instant::now();
-        let root = self.tree.root_hash();
-        crate::metrics::record_root_computation(root_start.elapsed().as_secs_f64());
-
         self.last_block = block_number;
         self.last_hash = block_hash;
 
-        let should_flush = block_number <= self.last_persisted_block ||
-            (block_number - self.last_persisted_block) >= self.flush_interval;
+        let should_flush = block_number <= self.last_persisted_block
+            || (block_number - self.last_persisted_block) >= self.flush_interval;
 
         if should_flush {
             let persist_start = Instant::now();
@@ -231,11 +236,15 @@ impl UbtExEx {
                 self.db.batch_update_stems(&dirty)?;
             }
 
+            let root_start = Instant::now();
+            let root = self.compute_root_streaming()?;
+            crate::metrics::record_root_computation(root_start.elapsed().as_secs_f64());
+
             let head = UbtHead {
                 block_number,
                 block_hash,
                 root,
-                stem_count: self.tree.stem_count(),
+                stem_count: self.stem_count,
             };
             self.db.save_head(&head)?;
             crate::metrics::record_persistence(persist_start.elapsed().as_secs_f64(), dirty_count);
@@ -243,11 +252,12 @@ impl UbtExEx {
 
             self.last_persisted_block = block_number;
             self.last_persisted_hash = block_hash;
+            self.last_root = root;
 
             info!(
                 block = block_number,
                 entries = entry_count,
-                stems = self.tree.stem_count(),
+                stems = self.stem_count,
                 dirty_stems = dirty_count,
                 root = %root,
                 "UBT updated and flushed to MDBX"
@@ -265,6 +275,9 @@ impl UbtExEx {
                     _ => {}
                 }
             }
+
+            crate::metrics::record_block_processed(block_number, entry_count, self.stem_count);
+            Ok(root)
         } else {
             crate::metrics::record_dirty_stems(self.dirty_stems.len());
             debug!(
@@ -272,16 +285,22 @@ impl UbtExEx {
                 entries = entry_count,
                 pending_stems = self.dirty_stems.len(),
                 blocks_until_flush = self.flush_interval - (block_number - self.last_persisted_block),
-                root = %root,
                 "UBT updated in-memory (pending flush)"
             );
+
+            crate::metrics::record_block_processed(block_number, entry_count, self.stem_count);
+            Ok(self.last_root)
         }
-
-        crate::metrics::record_block_processed(block_number, entry_count, self.tree.stem_count());
-
-        Ok(root)
     }
 
+    /// Revert the UBT state for the given chain of blocks.
+    ///
+    /// Applies stored deltas in reverse order to restore previous values.
+    ///
+    /// Note: `stem_count` is not decremented during reverts, so it may be slightly
+    /// inflated after reorgs. This is a known limitation - accurate stem counting
+    /// would require scanning MDBX which is expensive. The count is reset on restart
+    /// from the persisted head.
     pub fn revert(&mut self, chain: &Chain<impl NodePrimitives>) -> Result<()> {
         let blocks = chain.blocks();
         let mut block_numbers: Vec<u64> = blocks.keys().copied().collect();
@@ -303,13 +322,14 @@ impl UbtExEx {
             }
 
             for (stem, subindex, old_value) in deltas.iter().rev() {
-                let key = TreeKey::new(*stem, *subindex);
-                self.tree.insert(key.clone(), *old_value);
-
-                let stem_node = self
-                    .dirty_stems
-                    .entry(*stem)
-                    .or_insert_with(|| StemNode::new(*stem));
+                if !self.dirty_stems.contains_key(stem) {
+                    if let Some(existing) = self.db.load_stem(stem)? {
+                        self.dirty_stems.insert(*stem, existing);
+                    } else {
+                        self.dirty_stems.insert(*stem, StemNode::new(*stem));
+                    }
+                }
+                let stem_node = self.dirty_stems.get_mut(stem).expect("just inserted");
                 stem_node.set_value(*subindex, *old_value);
             }
 
@@ -337,17 +357,18 @@ impl UbtExEx {
                 self.db.batch_update_stems(&dirty)?;
             }
 
-            let root = self.tree.root_hash();
+            let root = self.compute_root_streaming()?;
             let head = UbtHead {
                 block_number: self.last_block,
                 block_hash: self.last_hash,
                 root,
-                stem_count: self.tree.stem_count(),
+                stem_count: self.stem_count,
             };
             self.db.save_head(&head)?;
 
             self.last_persisted_block = self.last_block;
             self.last_persisted_hash = self.last_hash;
+            self.last_root = root;
         }
 
         info!(
@@ -384,7 +405,7 @@ impl UbtExEx {
                 return Ok(Some(value));
             }
         }
-        Ok(self.tree.get(key))
+        self.db.load_value(key)
     }
 
     /// Gracefully shutdown, flushing all pending state to MDBX.
@@ -397,12 +418,12 @@ impl UbtExEx {
             self.db.batch_update_stems(&dirty)?;
         }
 
-        let root = self.tree.root_hash();
+        let root = self.compute_root_streaming()?;
         let head = UbtHead {
             block_number: self.last_block,
             block_hash: self.last_hash,
             root,
-            stem_count: self.tree.stem_count(),
+            stem_count: self.stem_count,
         };
         self.db.save_head(&head)?;
 
@@ -414,13 +435,24 @@ impl UbtExEx {
 
         Ok(())
     }
+
+    /// Compute root hash from MDBX entries using streaming builder with parallel hashing.
+    ///
+    /// This reads all entries from MDBX and computes the root without
+    /// keeping the full tree in memory. Uses rayon for parallel stem hashing.
+    /// Note: still creates a Vec of all entries, so memory spikes during computation.
+    fn compute_root_streaming(&self) -> Result<B256> {
+        let entries = self.db.iter_entries_sorted()?;
+        let root = StreamingTreeBuilder::<Blake3Hasher>::new().build_root_hash_parallel(entries);
+        Ok(root)
+    }
 }
 
-/// Verify root hash using streaming computation (memory-efficient).
-fn verify_root_streaming(db: &UbtDatabase, expected_root: B256) -> Result<bool> {
+/// Compute root hash from MDBX using streaming builder with parallel hashing.
+fn compute_root_streaming(db: &UbtDatabase) -> Result<B256> {
     let entries = db.iter_entries_sorted()?;
-    let computed = StreamingTreeBuilder::<Blake3Hasher>::new().build_root_hash(entries);
-    Ok(computed == expected_root)
+    let root = StreamingTreeBuilder::<Blake3Hasher>::new().build_root_hash_parallel(entries);
+    Ok(root)
 }
 
 const KECCAK_EMPTY: B256 = B256::new([

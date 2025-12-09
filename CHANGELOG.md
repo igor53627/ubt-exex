@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Critical bug: dirty overlay now seeds from MDBX before mutation (#27)
+  - Previously, updating a stem not in dirty_stems created an empty StemNode
+  - This caused all other subindex values in MDBX to be lost on flush
+  - Now loads existing stem from MDBX to preserve all subindex values
+- Error handling: MDBX read errors are now propagated instead of silently swallowed (#27)
+  - Replaced `.ok().flatten()` patterns with proper `?` error propagation
+
 ### Added
 - Production readiness improvements (#13):
   - Custom error types with `thiserror` (#18)
@@ -33,6 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Batch persistence across blocks (#2) - MDBX writes batched by `UBT_FLUSH_INTERVAL` env var
   - Default interval=1 maintains current behavior
   - Higher values reduce I/O when same stems modified across consecutive blocks
+- Memory optimization (#23, #24, #25) - removed 80GB+ RAM requirement
+  - Full tree no longer loaded at startup - MDBX is canonical state store
+  - All reads via dirty overlay + MDBX fallback
+  - Root computed via streaming from MDBX (memory spike during computation only)
+  - Baseline memory now <1GB instead of ~80GB+ for Sepolia
+- Parallel stem hashing (#7) - uses rayon for multi-core root computation
+  - Enabled `parallel` feature in ubt dependency
+  - Switched to `build_root_hash_parallel` for both root computation and verification
+  - Stem hashing distributed across cores, tree building remains sequential
 
 ### Fixed
 - Proper reorg handling with per-block deltas (#3)
@@ -41,7 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Deltas for persisted blocks preserved for crash recovery
 
 ### Known Issues
-- Full tree still loaded into memory at startup (streaming is verification only)
+- Root computation still creates Vec of all entries (memory spike during flush)
+- Root only computed on flush, not per-block (last_root returned between flushes)
 
 ## [0.1.0] - 2024-12-08
 

@@ -17,6 +17,9 @@ pub enum UbtError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Root verification failed: expected {expected}, computed {computed}")]
+    RootVerificationFailed { expected: String, computed: String },
 }
 
 #[derive(Error, Debug)]

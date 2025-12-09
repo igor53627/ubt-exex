@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 # UBT implementation
 # TODO: Update to specific release tag once available
-ubt = { git = "https://github.com/igor53627/ubt-rs", branch = "main", features = ["serde"] }
+ubt = { git = "https://github.com/igor53627/ubt-rs", branch = "main", features = ["serde", "parallel"] }
 
 # Reth dependencies
 # TODO: Update to specific release tag once available
