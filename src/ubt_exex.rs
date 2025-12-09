@@ -239,6 +239,7 @@ impl UbtExEx {
             };
             self.db.save_head(&head)?;
             crate::metrics::record_persistence(persist_start.elapsed().as_secs_f64(), dirty_count);
+            crate::metrics::record_dirty_stems(0);
 
             self.last_persisted_block = block_number;
             self.last_persisted_hash = block_hash;
