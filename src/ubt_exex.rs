@@ -465,10 +465,6 @@ impl UbtExEx {
             stem_node.set_value(*subindex, *old_value);
         }
 
-        if block_number > self.last_persisted_block {
-            self.db.delete_block_deltas(block_number)?;
-        }
-
         Ok(())
     }
 }
