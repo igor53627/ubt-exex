@@ -1,5 +1,7 @@
 # reth-ubt-exex
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/igor53627/reth-ubt-exex)
+
 Reth Execution Extension (ExEx) plugin for maintaining UBT (EIP-7864 Unified Binary Tree) state in parallel with the normal MPT state.
 
 ## Overview
