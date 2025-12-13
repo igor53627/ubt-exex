@@ -17,7 +17,7 @@ The UBT root is computed via streaming from MDBX and persisted on each flush, en
 
 ```
 +-------------------------------------------------+
-|                  reth node                       |
+|                  reth node                      |
 |  +-------------+     +----------------------+   |
 |  | Consensus   |---->| ExExNotification     |   |
 |  | Engine      |     | - ChainCommitted     |   |
