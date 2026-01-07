@@ -14,7 +14,7 @@
 
 #![allow(dead_code)]
 
-use std::ffi::{c_void, CString};
+use std::ffi::{c_void, CStr, CString};
 use std::marker::PhantomData;
 use std::path::Path;
 use std::ptr;
@@ -23,9 +23,9 @@ use std::rc::Rc;
 use mdbx_rs::{
     mdbx_cursor_close, mdbx_cursor_get, mdbx_cursor_open, mdbx_dbi_open, mdbx_del, mdbx_env_close,
     mdbx_env_create, mdbx_env_open, mdbx_env_set_geometry, mdbx_env_set_maxdbs, mdbx_env_sync_ex,
-    mdbx_get, mdbx_put, mdbx_txn_abort, mdbx_txn_begin, mdbx_txn_commit, MDBX_cursor,
-    MDBX_cursor_op, MDBX_dbi, MDBX_env, MDBX_txn, MDBX_val, MDBX_CREATE, MDBX_NOTFOUND,
-    MDBX_RDONLY, MDBX_SUCCESS,
+    mdbx_get, mdbx_put, mdbx_strerror, mdbx_txn_abort, mdbx_txn_begin, mdbx_txn_commit,
+    MDBX_cursor, MDBX_cursor_op, MDBX_dbi, MDBX_env, MDBX_txn, MDBX_val, MDBX_CREATE,
+    MDBX_NOTFOUND, MDBX_RDONLY, MDBX_SUCCESS,
 };
 
 /// Error type for MDBX operations.
@@ -45,39 +45,16 @@ impl std::error::Error for Error {}
 
 impl Error {
     fn from_code(code: i32) -> Self {
-        let message = match code {
-            -30799 => "MDBX_KEYEXIST: Key already exists",
-            -30798 => "MDBX_NOTFOUND: Key not found",
-            -30797 => "MDBX_PAGE_NOTFOUND: Page not found",
-            -30796 => "MDBX_CORRUPTED: Database corrupted",
-            -30795 => "MDBX_PANIC: Environment had fatal error",
-            -30794 => "MDBX_VERSION_MISMATCH: Version mismatch",
-            -30793 => "MDBX_INVALID: Invalid parameter",
-            -30792 => "MDBX_MAP_FULL: Database map full",
-            -30791 => "MDBX_DBS_FULL: Too many databases",
-            -30790 => "MDBX_READERS_FULL: Too many readers",
-            -30788 => "MDBX_TXN_FULL: Transaction too big",
-            -30787 => "MDBX_CURSOR_FULL: Cursor stack too deep",
-            -30786 => "MDBX_PAGE_FULL: Page full",
-            -30785 => "MDBX_UNABLE_EXTEND_MAPSIZE: Unable to extend map size",
-            -30784 => "MDBX_INCOMPATIBLE: Incompatible operation",
-            -30783 => "MDBX_BAD_RSLOT: Invalid reader slot",
-            -30782 => "MDBX_BAD_TXN: Transaction has error or is done",
-            -30781 => "MDBX_BAD_VALSIZE: Invalid value size",
-            -30780 => "MDBX_BAD_DBI: Invalid database handle",
-            -30779 => "MDBX_PROBLEM: Unexpected problem",
-            -30778 => "MDBX_BUSY: Environment is busy",
-            -22 => "MDBX_EINVAL: Invalid argument",
-            -13 => "MDBX_EACCESS: Access denied",
-            -12 => "MDBX_ENOMEM: Out of memory",
-            _ => {
-                return Self {
-                    code,
-                    message: format!("Unknown error (code {})", code),
-                }
+        // Use mdbx_strerror to get the error message from MDBX.
+        // SAFETY: mdbx_strerror returns a pointer to a static string that is always valid.
+        let message = unsafe {
+            let msg_ptr = mdbx_strerror(code);
+            if msg_ptr.is_null() {
+                format!("Unknown error (code {})", code)
+            } else {
+                CStr::from_ptr(msg_ptr).to_string_lossy().into_owned()
             }
-        }
-        .to_string();
+        };
         Self { code, message }
     }
 
@@ -152,6 +129,11 @@ pub struct WriteFlags(u32);
 impl WriteFlags {
     /// Default write flags.
     pub const DEFAULT: Self = Self(0);
+
+    /// Get the raw bits value.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
 }
 
 /// MDBX Environment wrapper.
@@ -507,7 +489,7 @@ impl<'env> RwTransaction<'env> {
     }
 
     /// Put a key-value pair.
-    pub fn put(&self, db: Database, key: &[u8], value: &[u8], _flags: WriteFlags) -> Result<()> {
+    pub fn put(&self, db: Database, key: &[u8], value: &[u8], flags: WriteFlags) -> Result<()> {
         let key_val = MDBX_val {
             iov_len: key.len(),
             iov_base: key.as_ptr() as *mut c_void,
@@ -518,7 +500,7 @@ impl<'env> RwTransaction<'env> {
         };
 
         // SAFETY: txn and dbi are valid, key_val and data_val point to valid data.
-        let rc = unsafe { mdbx_put(self.txn, db.dbi, &key_val, &mut data_val, 0) };
+        let rc = unsafe { mdbx_put(self.txn, db.dbi, &key_val, &mut data_val, flags.bits()) };
         check_rc(rc)
     }
 
