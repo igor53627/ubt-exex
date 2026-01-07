@@ -534,4 +534,16 @@ mod tests {
         assert!(!db.load_block_deltas(100).unwrap().is_empty());
         assert!(!db.load_block_deltas(150).unwrap().is_empty());
     }
+
+    #[test]
+    fn test_delete_block_deltas_idempotent() {
+        let (_dir, db) = create_test_db();
+
+        // Deleting a non-existent block should succeed (idempotent operation).
+        // This tests that MDBX_NOTFOUND is handled correctly.
+        db.delete_block_deltas(999999).unwrap();
+
+        // Verify the operation is truly idempotent by calling it again.
+        db.delete_block_deltas(999999).unwrap();
+    }
 }

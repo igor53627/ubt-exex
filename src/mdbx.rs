@@ -18,6 +18,7 @@ use std::ffi::{c_void, CString};
 use std::marker::PhantomData;
 use std::path::Path;
 use std::ptr;
+use std::rc::Rc;
 
 use mdbx_rs::{
     mdbx_cursor_close, mdbx_cursor_get, mdbx_cursor_open, mdbx_dbi_open, mdbx_del, mdbx_env_close,
@@ -69,7 +70,12 @@ impl Error {
             -22 => "MDBX_EINVAL: Invalid argument",
             -13 => "MDBX_EACCESS: Access denied",
             -12 => "MDBX_ENOMEM: Out of memory",
-            _ => "Unknown error",
+            _ => {
+                return Self {
+                    code,
+                    message: format!("Unknown error (code {})", code),
+                }
+            }
         }
         .to_string();
         Self { code, message }
@@ -132,6 +138,11 @@ impl DatabaseFlags {
     pub const CREATE: Self = Self(MDBX_CREATE as u32);
     /// No flags.
     pub const DEFAULT: Self = Self(0);
+
+    /// Get the raw bits value.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
 }
 
 /// Write flags for put operations.
@@ -151,8 +162,18 @@ pub struct Environment {
     env: *mut MDBX_env,
 }
 
-// SAFETY: MDBX environments are thread-safe for concurrent access.
-// Multiple threads can open transactions on the same environment.
+// SAFETY: The MDBX environment handle is thread-safe for concurrent access.
+//
+// From libmdbx documentation (https://libmdbx.dqdkfa.ru/intro.html):
+// "The library is fully thread-aware and supports concurrent read/write access
+// from multiple processes and threads."
+//
+// Concurrent usage must be through separate transactions per thread.
+// Transactions and cursors are NOT thread-safe and must not be moved between
+// threads (they are `!Send` and `!Sync`).
+//
+// Dropping/closing the environment requires no live transactions, which Rust's
+// borrow checker enforces through the lifetime parameter on transactions.
 unsafe impl Send for Environment {}
 unsafe impl Sync for Environment {}
 
@@ -183,6 +204,7 @@ impl Environment {
         Ok(RoTransaction {
             txn,
             _marker: PhantomData,
+            _not_send: PhantomData,
         })
     }
 
@@ -197,6 +219,7 @@ impl Environment {
             txn,
             committed: false,
             _marker: PhantomData,
+            _not_send: PhantomData,
         })
     }
 }
@@ -314,9 +337,17 @@ impl Database {
 /// Read-only transaction.
 ///
 /// Provides read access to the database. Automatically aborted on drop.
+///
+/// # Thread Safety
+///
+/// Transactions are NOT thread-safe and must not be moved between threads.
+/// This is enforced by the `_not_send` marker which makes this type `!Send` and `!Sync`.
 pub struct RoTransaction<'env> {
     txn: *mut MDBX_txn,
     _marker: PhantomData<&'env Environment>,
+    /// Marker to make this type `!Send` and `!Sync`.
+    /// MDBX transactions are thread-local and must not be moved between threads.
+    _not_send: PhantomData<Rc<()>>,
 }
 
 impl<'env> RoTransaction<'env> {
@@ -375,6 +406,7 @@ impl<'env> RoTransaction<'env> {
         Ok(Cursor {
             cursor,
             _marker: PhantomData,
+            _not_send: PhantomData,
         })
     }
 }
@@ -394,10 +426,18 @@ impl Drop for RoTransaction<'_> {
 ///
 /// Provides read and write access to the database. Must be explicitly committed,
 /// otherwise it is aborted on drop.
+///
+/// # Thread Safety
+///
+/// Transactions are NOT thread-safe and must not be moved between threads.
+/// This is enforced by the `_not_send` marker which makes this type `!Send` and `!Sync`.
 pub struct RwTransaction<'env> {
     txn: *mut MDBX_txn,
     committed: bool,
     _marker: PhantomData<&'env Environment>,
+    /// Marker to make this type `!Send` and `!Sync`.
+    /// MDBX transactions are thread-local and must not be moved between threads.
+    _not_send: PhantomData<Rc<()>>,
 }
 
 impl<'env> RwTransaction<'env> {
@@ -420,7 +460,10 @@ impl<'env> RwTransaction<'env> {
     }
 
     /// Create a database if it doesn't exist.
-    pub fn create_db(&self, name: Option<&str>, _flags: DatabaseFlags) -> Result<Database> {
+    ///
+    /// The passed flags are combined with MDBX_CREATE to ensure the database
+    /// is created if it doesn't exist.
+    pub fn create_db(&self, name: Option<&str>, flags: DatabaseFlags) -> Result<Database> {
         let mut dbi: MDBX_dbi = 0;
         let name_cstr = name.map(CString::new).transpose().map_err(|_| Error {
             code: -22,
@@ -431,9 +474,12 @@ impl<'env> RwTransaction<'env> {
             .map(|c| c.as_ptr())
             .unwrap_or(ptr::null());
 
+        // Combine user-provided flags with MDBX_CREATE to ensure database creation.
+        let combined_flags = MDBX_CREATE as u32 | flags.bits();
+
         // SAFETY: txn pointer is valid, name_ptr is either null or valid C string.
         // MDBX_CREATE flag ensures the database is created if it doesn't exist.
-        let rc = unsafe { mdbx_dbi_open(self.txn, name_ptr, MDBX_CREATE as u32, &mut dbi) };
+        let rc = unsafe { mdbx_dbi_open(self.txn, name_ptr, combined_flags, &mut dbi) };
         check_rc(rc)?;
         Ok(Database { dbi })
     }
@@ -518,6 +564,7 @@ impl<'env> RwTransaction<'env> {
         Ok(Cursor {
             cursor,
             _marker: PhantomData,
+            _not_send: PhantomData,
         })
     }
 
@@ -542,9 +589,17 @@ impl Drop for RwTransaction<'_> {
 }
 
 /// Cursor for iterating over database entries.
+///
+/// # Thread Safety
+///
+/// Cursors are NOT thread-safe and must not be moved between threads.
+/// This is enforced by the `_not_send` marker which makes this type `!Send` and `!Sync`.
 pub struct Cursor<'txn> {
     cursor: *mut MDBX_cursor,
     _marker: PhantomData<&'txn ()>,
+    /// Marker to make this type `!Send` and `!Sync`.
+    /// MDBX cursors are thread-local and must not be moved between threads.
+    _not_send: PhantomData<Rc<()>>,
 }
 
 impl<'txn> Cursor<'txn> {
