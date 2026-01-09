@@ -5,6 +5,7 @@
 pub mod config;
 pub mod error;
 pub mod key_index;
+pub mod mdbx;
 pub mod metrics;
 pub mod persistence;
 pub mod pir_export;

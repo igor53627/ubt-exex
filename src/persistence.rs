@@ -16,12 +16,12 @@
 //! The stored root hash is verified against the computed root to detect corruption.
 
 use alloy_primitives::{Address, B256};
-use reth_libmdbx::{DatabaseFlags, Environment, Geometry, PageSize, WriteFlags};
 use std::path::Path;
 use tracing::warn;
 use ubt::{Stem, StemNode, TreeKey, STEM_LEN};
 
 use crate::error::{DatabaseError, Result, UbtError};
+use crate::mdbx::{DatabaseFlags, Environment, Geometry, WriteFlags};
 
 const STEMS_DB: &str = "ubt_stems";
 const STEM_ADDR_DB: &str = "ubt_stem_addresses";
@@ -45,30 +45,35 @@ impl UbtDatabase {
     pub fn open(path: &Path) -> Result<Self> {
         std::fs::create_dir_all(path)?;
 
-        let mut builder = Environment::builder();
-        builder.set_max_dbs(10);
         let max_size = mdbx_max_size_from_env().unwrap_or(1024 * 1024 * 1024 * 1024); // 1TB
-        builder.set_geometry(Geometry {
-            size: Some(0..max_size),
-            page_size: Some(PageSize::Set(4096)),
-            ..Default::default()
-        });
+        let geometry = Geometry {
+            size_lower: 0,
+            size_now: 4096 * 256,
+            size_upper: max_size as i64,
+            growth_step: -1,
+            shrink_threshold: -1,
+            page_size: 4096,
+        };
 
-        let env = builder.open(path).map_err(|e| {
-            UbtError::Database(DatabaseError::Open {
-                path: path.display().to_string(),
-                reason: e.to_string(),
-            })
-        })?;
+        let env = Environment::builder()
+            .set_max_dbs(10)
+            .set_geometry(geometry)
+            .open(path)
+            .map_err(|e| {
+                UbtError::Database(DatabaseError::Open {
+                    path: path.display().to_string(),
+                    reason: e.to_string(),
+                })
+            })?;
 
         let txn = env
             .begin_rw_txn()
             .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
-        txn.create_db(Some(STEMS_DB), DatabaseFlags::default())
+        txn.create_db(Some(STEMS_DB), DatabaseFlags::CREATE)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
-        txn.create_db(Some(META_DB), DatabaseFlags::default())
+        txn.create_db(Some(META_DB), DatabaseFlags::CREATE)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
-        txn.create_db(Some(DELTAS_DB), DatabaseFlags::default())
+        txn.create_db(Some(DELTAS_DB), DatabaseFlags::CREATE)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         txn.create_db(Some(STEM_ADDR_DB), DatabaseFlags::default())
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
@@ -88,7 +93,7 @@ impl UbtDatabase {
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
 
         match txn
-            .get::<Vec<u8>>(meta_db.dbi(), META_KEY_HEAD)
+            .get::<Vec<u8>>(meta_db, META_KEY_HEAD)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?
         {
             Some(bytes) => {
@@ -109,7 +114,7 @@ impl UbtDatabase {
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
 
         let bytes = bincode::serialize(head)?;
-        txn.put(meta_db.dbi(), META_KEY_HEAD, &bytes, WriteFlags::default())
+        txn.put(meta_db, META_KEY_HEAD, &bytes, WriteFlags::DEFAULT)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         txn.commit()
             .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
@@ -127,7 +132,7 @@ impl UbtDatabase {
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
 
         match txn
-            .get::<Vec<u8>>(stems_db.dbi(), stem.as_bytes())
+            .get::<Vec<u8>>(stems_db, stem.as_bytes())
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?
         {
             Some(bytes) => {
@@ -161,7 +166,7 @@ impl UbtDatabase {
         for (stem, stem_node) in updates {
             let key = stem.as_bytes();
             let value = bincode::serialize(stem_node)?;
-            txn.put(stems_db.dbi(), key, &value, WriteFlags::default())
+            txn.put(stems_db, key, &value, WriteFlags::DEFAULT)
                 .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         }
 
@@ -259,21 +264,24 @@ impl UbtDatabase {
             .open_db(Some(STEM_ADDR_DB))
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
 
+        if txn
+            .get::<Vec<u8>>(db, stem.as_bytes())
+            .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?
+            .is_some()
+        {
+            return Err(UbtError::Database(DatabaseError::Mdbx(format!(
+                "Stem address already exists for {:?}",
+                stem
+            ))));
+        }
+
         txn.put(
-            db.dbi(),
+            db,
             stem.as_bytes(),
             address.as_slice(),
-            WriteFlags::NO_OVERWRITE,
+            WriteFlags::DEFAULT,
         )
-        .map_err(|e| {
-            if matches!(e, reth_libmdbx::Error::KeyExist) {
-                return UbtError::Database(DatabaseError::Mdbx(format!(
-                    "Stem address already exists for {:?}",
-                    stem
-                )));
-            }
-            UbtError::Database(DatabaseError::Mdbx(e.to_string()))
-        })?;
+        .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         txn.commit()
             .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
 
@@ -294,20 +302,25 @@ impl UbtDatabase {
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
 
         for (stem, address) in mappings {
-            match txn.put(
-                db.dbi(),
+            if let Some(existing) = txn
+                .get::<Vec<u8>>(db, stem.as_bytes())
+                .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?
+            {
+                if existing.as_slice() != address.as_slice() {
+                    return Err(UbtError::Database(DatabaseError::Mdbx(
+                        "Stem address mismatch in MDBX".to_string(),
+                    )));
+                }
+                continue;
+            }
+
+            txn.put(
+                db,
                 stem.as_bytes(),
                 address.as_slice(),
-                WriteFlags::NO_OVERWRITE,
-            ) {
-                Ok(()) => {}
-                Err(reth_libmdbx::Error::KeyExist) => {
-                    // Already exists - ignore if same address, otherwise it's a consistency issue
-                }
-                Err(e) => {
-                    return Err(UbtError::Database(DatabaseError::Mdbx(e.to_string())));
-                }
-            }
+                WriteFlags::DEFAULT,
+            )
+            .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         }
 
         txn.commit()
@@ -326,7 +339,7 @@ impl UbtDatabase {
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
 
         match txn
-            .get::<Vec<u8>>(db.dbi(), stem.as_bytes())
+            .get::<Vec<u8>>(db, stem.as_bytes())
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?
         {
             Some(bytes) => {
@@ -355,7 +368,7 @@ impl UbtDatabase {
 
         let key = block_number.to_be_bytes();
         let value = bincode::serialize(deltas)?;
-        txn.put(deltas_db.dbi(), &key, &value, WriteFlags::default())
+        txn.put(deltas_db, &key, &value, WriteFlags::DEFAULT)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         txn.commit()
             .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
@@ -374,7 +387,7 @@ impl UbtDatabase {
 
         let key = block_number.to_be_bytes();
         match txn
-            .get::<Vec<u8>>(deltas_db.dbi(), &key)
+            .get::<Vec<u8>>(deltas_db, &key)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?
         {
             Some(bytes) => {
@@ -395,14 +408,8 @@ impl UbtDatabase {
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
 
         let key = block_number.to_be_bytes();
-        if let Err(e) = txn.del(deltas_db.dbi(), &key, None) {
-            if !matches!(e, reth_libmdbx::Error::NotFound) {
-                return Err(UbtError::Database(DatabaseError::Mdbx(format!(
-                    "Failed to delete deltas for block {}: {}",
-                    block_number, e
-                ))));
-            }
-        }
+        txn.del(deltas_db, &key, None)
+            .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         txn.commit()
             .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
 
@@ -453,7 +460,7 @@ impl UbtDatabase {
 
         let count = to_delete.len();
         for key in to_delete {
-            txn.del(deltas_db.dbi(), &key, None).map_err(|e| {
+            txn.del(deltas_db, &key, None).map_err(|e| {
                 UbtError::Database(DatabaseError::Mdbx(format!(
                     "Failed to delete delta: {}",
                     e
@@ -501,7 +508,7 @@ impl UbtDatabase {
         drop(cursor);
 
         for key in to_delete {
-            txn.del(deltas_db.dbi(), &key, None)
+            txn.del(deltas_db, &key, None)
                 .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         }
         txn.commit()
@@ -663,6 +670,18 @@ mod tests {
         assert!(db.load_block_deltas(50).unwrap().is_empty());
         assert!(!db.load_block_deltas(100).unwrap().is_empty());
         assert!(!db.load_block_deltas(150).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_delete_block_deltas_idempotent() {
+        let (_dir, db) = create_test_db();
+
+        // Deleting a non-existent block should succeed (idempotent operation).
+        // This tests that MDBX_NOTFOUND is handled correctly.
+        db.delete_block_deltas(999999).unwrap();
+
+        // Verify the operation is truly idempotent by calling it again.
+        db.delete_block_deltas(999999).unwrap();
     }
 
     #[test]

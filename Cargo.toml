@@ -15,18 +15,17 @@ path = "src/main.rs"
 ubt = { git = "https://github.com/igor53627/ubt-rs", branch = "main", features = ["serde", "parallel"] }
 
 # Reth dependencies
-# TODO: Update to specific release tag once available
-reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "main", features = ["full", "cli"] }
-reth-exex = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
-reth-exex-types = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
-reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
-reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
-reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
-reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
-reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
-reth-libmdbx = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
-reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
-reth-tasks = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
+# Using tag v1.9.3 for stable API
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3", features = ["full", "cli"] }
+reth-exex = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-exex-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-tasks = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+mdbx-rs = { git = "https://github.com/igor53627/mdbx-rs", branch = "main", default-features = false }
 
 # Alloy primitives
 alloy-primitives = "1"
@@ -58,7 +57,7 @@ hex = "0.4"
 tracing = "0.1"
 
 # Metrics
-reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "main" }
+reth-metrics = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 metrics = "0.24"
 nomt = "1.0.3"
 redb = "2.1"

@@ -138,30 +138,48 @@ impl UbtExEx {
         nomt_opts.rollback(true);
         // Adjust these based on requirements
         nomt_opts.commit_concurrency(1);
-        
-        let nomt = Nomt::open(nomt_opts).map_err(|e| crate::error::UbtError::Database(crate::error::DatabaseError::Mdbx(e.to_string())))?;
+
+        let nomt = Nomt::open(nomt_opts).map_err(|e| {
+            crate::error::UbtError::Database(crate::error::DatabaseError::Mdbx(e.to_string()))
+        })?;
 
         // Sync logic: Check NOMT head
         let nomt_head_block = if let Ok(Some(val)) = nomt.read(NOMT_HEAD_KEY) {
-             u64::from_be_bytes(val.try_into().unwrap_or([0; 8]))
+            u64::from_be_bytes(val.try_into().unwrap_or([0; 8]))
         } else {
-             0
+            0
         };
 
-        info!(nomt_head = nomt_head_block, mdbx_head = last_persisted_block, "Checking NOMT/MDBX sync");
+        info!(
+            nomt_head = nomt_head_block,
+            mdbx_head = last_persisted_block,
+            "Checking NOMT/MDBX sync"
+        );
 
         if nomt_head_block > last_persisted_block {
             let diff = nomt_head_block - last_persisted_block;
-            warn!(diff, nomt_head = nomt_head_block, mdbx_head = last_persisted_block, "NOMT is ahead of MDBX, rolling back");
+            warn!(
+                diff,
+                nomt_head = nomt_head_block,
+                mdbx_head = last_persisted_block,
+                "NOMT is ahead of MDBX, rolling back"
+            );
             if let Err(e) = nomt.rollback(diff as usize) {
-                 warn!("NOMT rollback failed (possibly not enough history): {}. Proceeding with potential overwrite.", e);
+                warn!(
+                    "NOMT rollback failed (possibly not enough history): {}. Proceeding with potential overwrite.",
+                    e
+                );
             } else {
                 info!("NOMT rollback successful");
             }
         } else if nomt_head_block < last_persisted_block {
-             warn!(nomt_head = nomt_head_block, mdbx_head = last_persisted_block, "NOMT is behind MDBX. Will re-process blocks to catch up.");
-             // Force re-processing from NOMT head
-             last_persisted_block = nomt_head_block;
+            warn!(
+                nomt_head = nomt_head_block,
+                mdbx_head = last_persisted_block,
+                "NOMT is behind MDBX. Will re-process blocks to catch up."
+            );
+            // Force re-processing from NOMT head
+            last_persisted_block = nomt_head_block;
         }
 
         info!(
@@ -252,7 +270,7 @@ impl UbtExEx {
             }
 
             for (slot, value) in &account.storage {
-                let slot_bytes = u256_to_b256((*slot).into());
+                let slot_bytes = u256_to_b256(*slot);
                 let value_bytes = u256_to_b256(value.present_value);
                 let storage_key = get_storage_slot_key(&address, &slot_bytes.0);
                 self.pending_entries.push(PendingEntry {
